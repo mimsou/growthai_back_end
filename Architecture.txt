@@ -1,0 +1,18 @@
+crawler/
+├── config/
+├── interfaces/
+├── core/
+├── dto/
+├── repository/
+├── schemas/
+└── services/
+    ├── analysis/
+    ├── custom-extraction/
+    ├── extraction/
+    ├── internationalization/
+    ├── mobile/
+    ├── search/
+    ├── pagination/
+    ├── performance/
+    ├── robot/
+    └── sitemap/

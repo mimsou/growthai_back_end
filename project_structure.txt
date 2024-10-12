@@ -45,21 +45,30 @@ src\app.module.ts
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from './auth/auth.module';
+import { SEOModule } from './seo/seo.module';
 import { ConfigModule } from '@nestjs/config';
 import { mongooseConfig } from './config/mongoose.config';
+import { AuditSessionModule } from './audit/audit-session.module';
+import { AIModule } from './ai/ai.module';
+import { CrawlerModule } from './crawler/core/crawler.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
-      isGlobal: true, // Makes environment variables available globally
+      isGlobal: true,
     }),
     MongooseModule.forRoot("mongodb://localhost:27017/seopt"),
     AuthModule,
+    SEOModule,
+    AuditSessionModule,
+    AIModule,
+    CrawlerModule
   ],
   controllers: [],
   providers: [],
 })
-export class AppModule {}-----------END OF FILE----------- 
+export class AppModule {}
+-----------END OF FILE----------- 
  
 src\app.service.ts 
 -----------START OF FILE----------- 
@@ -78,26 +87,320 @@ src\main.ts
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
+import { IoAdapter } from '@nestjs/platform-socket.io';
+import * as os from 'os';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // Enable CORS
   app.enableCors({
-    origin: 'http://localhost:3000', // Replace with the origin of your frontend
+    origin: 'http://localhost:3000',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: true, // Allow cookies to be included in requests
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
+
+  // Configure WebSocket adapter with CORS
+  app.useWebSocketAdapter(new IoAdapter(app));
 
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe());
+
+  // Configure thread pool
+  const numCPUs = os.cpus().length;
+  const maxThreads = Math.min(numCPUs, parseInt(process.env.CRAWLER_MAX_THREADS) || 4);
+  process.env.UV_THREADPOOL_SIZE = maxThreads.toString();
   
   await app.listen(process.env.PORT || 5000);
+}bootstrap();-----------END OF FILE----------- 
+ 
+    C:\Workspace\Web\Ai Business grow project\Back_end\src\ai\ai.controller.ts 
+-----------START OF FILE----------- 
+import { Controller, Post, Body, Res } from '@nestjs/common';
+import { AIService } from './ai.service';
+import { OllamaService } from './agent/ollama.agent.service';
+import { AiPromptService } from './prompt/ai.prompt.service';
+import { Response } from 'express'; // Import Express Response
+
+@Controller('ai')
+export class AiController {
+  constructor(private readonly aiService: AIService, private readonly ollamaService: OllamaService, private readonly aiPromptService: AiPromptService) {}
+
+  @Post('ask')
+  async Ask(@Body() data: { prompt: string; seoSubject: string, sessionId: string }, @Res() res: Response): Promise<any> {
+    const content = await this.aiService.getData(data.seoSubject, data.sessionId);
+    const prompt = await this.aiPromptService.getPromptBySeoSubject(data.seoSubject);
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Transfer-Encoding', 'chunked'); // Important for streaming response
+
+    // Call the service to stream the AI response
+    await this.ollamaService.streamResponse(prompt, content, res);
+  }
 }
-bootstrap();
 -----------END OF FILE----------- 
  
-    C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\auth.controller.ts 
+    C:\Workspace\Web\Ai Business grow project\Back_end\src\ai\ai.module.ts 
+-----------START OF FILE----------- 
+import { Module , forwardRef } from '@nestjs/common';
+import { AIService } from './ai.service';
+import { SeoStrategy } from './ai.seo.strategy'; 
+import { RobotsService } from '../seo/robots/robots.service';
+import { SEOModule } from 'src/seo/seo.module';
+import { SEOEnum } from 'src/enum/seo.enum';
+import { MongooseModule } from '@nestjs/mongoose';
+import { SeoServiceInterface } from 'src/seo/seo.interface';
+import { RobotsData, RobotsDataSchema } from '../seo/robots/robots-data.schema';
+import { PromptData, PromptDataSchema } from  '../ai/prompt/ai.prompt-data.schema';
+import { AiController } from './ai.controller';
+import { AgentModule } from './agent/agent.modules';
+import { AiPromptService } from './prompt/ai.prompt.service';
+
+
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: RobotsData.name, schema: RobotsDataSchema },
+      { name: PromptData.name, schema: PromptDataSchema },
+    ]),
+    AgentModule
+  ],
+  providers: [AIService,SeoStrategy,
+      {
+      provide: 'seoServices',
+      useFactory: (robotsService: RobotsService) => {
+        const seoServices = new Map<string, SeoServiceInterface>();
+        seoServices.set(SEOEnum.ROBOT, robotsService);
+        return seoServices;
+      },
+      inject: [RobotsService],
+    },
+    RobotsService,
+    AiPromptService],
+    controllers: [AiController],
+  exports: [AIService],
+})
+export class AIModule {
+}
+-----------END OF FILE----------- 
+ 
+    C:\Workspace\Web\Ai Business grow project\Back_end\src\ai\ai.seo.strategy.ts 
+-----------START OF FILE----------- 
+import { Inject, Injectable } from '@nestjs/common';
+import { SeoServiceInterface } from '../seo/seo.interface';
+
+@Injectable()
+export class SeoStrategy {
+  constructor( @Inject('seoServices') private readonly seoServices: Map<string, SeoServiceInterface>) {}
+
+  async execute(seoSubject: string, sessionId:string): Promise<any> {
+    const seoService = this.seoServices.get(seoSubject);
+    if (!seoService) {
+      throw new Error(`No SEO service found for subject: ${seoSubject}`);
+    }
+    return await seoService.getData(sessionId);
+  }
+
+  addSeoService(seoSubject: string, seoService: SeoServiceInterface): void {
+    this.seoServices.set(seoSubject, seoService);
+  }
+}-----------END OF FILE----------- 
+ 
+    C:\Workspace\Web\Ai Business grow project\Back_end\src\ai\ai.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { SeoStrategy } from './ai.seo.strategy';
+
+@Injectable()
+export class AIService {
+  constructor(private readonly seoStrategy: SeoStrategy) {}
+  async getData(seoSubject:string, sessionId:string): Promise<any> {
+     return this.seoStrategy.execute(seoSubject, sessionId);
+  }
+}-----------END OF FILE----------- 
+ 
+        C:\Workspace\Web\Ai Business grow project\Back_end\src\ai\agent\agent.modules.ts 
+-----------START OF FILE----------- 
+import { Module } from '@nestjs/common';
+ import { OllamaService } from './ollama.agent.service';
+import { HttpModule } from '@nestjs/axios';
+ 
+ const agentProviders = [
+        OllamaService,
+ ];
+
+ @Module({
+   imports: [HttpModule],
+   providers: [...agentProviders],
+   exports: [...agentProviders],
+ })
+ export class AgentModule {}
+-----------END OF FILE----------- 
+ 
+        C:\Workspace\Web\Ai Business grow project\Back_end\src\ai\agent\ollama.agent.service.ts 
+-----------START OF FILE----------- 
+import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
+import { Response } from 'express';
+
+@Injectable()
+export class OllamaService {
+  private readonly baseUrl: string;
+  private readonly httpService: HttpService;
+
+  constructor(private readonly configService: ConfigService, httpService: HttpService) {
+    this.baseUrl = this.configService.get<string>('LOCAL_IA_AGENT_SERVICE'); // Base URL from environment variable
+    this.httpService = httpService;
+  }
+
+  async streamResponse(prompt: string, context: string, res: Response): Promise<void> {
+    const endpoint = `${this.baseUrl}/api/generate`;
+
+    try {
+      const response = await this.httpService.post(endpoint, {
+        model: 'llama3.1:8b',
+        prompt: `${prompt} ${context}`,
+      }, { responseType: 'stream' }).toPromise();
+
+      if (!response || !response.data) {
+        throw new HttpException(`Error contacting the AI model`, HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+
+      response.data.on('data', (chunk) => {
+        res.write(chunk);
+      });
+
+      response.data.on('end', () => {
+        res.end();
+      });
+    } catch (error) {
+      console.error(error);
+      throw new HttpException(`Error contacting the AI model: ${error.message}`, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+}
+-----------END OF FILE----------- 
+ 
+            C:\Workspace\Web\Ai Business grow project\Back_end\src\ai\prompt\ai.prompt-data.schema.ts 
+-----------START OF FILE----------- 
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema()
+export class PromptData extends Document {
+  @Prop({ required: true })
+  seoSubject: string;
+
+  @Prop()
+  content?: string;
+}
+
+export const PromptDataSchema = SchemaFactory.createForClass(PromptData);-----------END OF FILE----------- 
+ 
+            C:\Workspace\Web\Ai Business grow project\Back_end\src\ai\prompt\ai.prompt.service.ts 
+-----------START OF FILE----------- 
+
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import {PromptData } from './ai.prompt-data.schema';
+
+@Injectable()
+export class AiPromptService {
+  constructor(
+    @InjectModel(PromptData.name) private promptDataModel: Model<PromptData>,
+  ) {}
+
+  async getPromptBySeoSubject(seoSubject: string): Promise<string | null> {
+    const result = await this.promptDataModel.find({ seoSubject: seoSubject }).exec();
+    if (!result) return null;
+    return result.map(item => item.content).join('\n');
+  }
+}
+
+-----------END OF FILE----------- 
+ 
+                C:\Workspace\Web\Ai Business grow project\Back_end\src\audit\audit-session.controller.ts 
+-----------START OF FILE----------- 
+import { Controller, Post, UseGuards, Request } from '@nestjs/common';
+import { AuditSessionService } from './audit-session.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+
+@Controller('audit')
+export class AuditSessionController {
+  constructor(private readonly auditSessionService: AuditSessionService) {}
+
+  //@UseGuards(JwtAuthGuard)
+  @Post('new')
+  async createAuditSession(@Request() req: any) {
+    //console.log(req.user.id);
+    const userId = "66eefa9b8319d7e5b17f4d70"
+    const session = await this.auditSessionService.createAuditSession(userId);
+    return { auditId: session.auditId };
+  }
+}
+-----------END OF FILE----------- 
+ 
+                C:\Workspace\Web\Ai Business grow project\Back_end\src\audit\audit-session.module.ts 
+-----------START OF FILE----------- 
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { AuditSessionController } from './audit-session.controller';
+import { AuditSessionService } from './audit-session.service';
+import { AuditSession, AuditSessionSchema } from './audit-session.schema';
+
+@Module({
+  imports: [MongooseModule.forFeature([{ name: AuditSession.name, schema: AuditSessionSchema }])],
+  controllers: [AuditSessionController],
+  providers: [AuditSessionService],
+})
+export class AuditSessionModule {}
+-----------END OF FILE----------- 
+ 
+                C:\Workspace\Web\Ai Business grow project\Back_end\src\audit\audit-session.schema.ts 
+-----------START OF FILE----------- 
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+import { v4 as uuidv4 } from 'uuid'; 
+
+@Schema()
+export class AuditSession extends Document {
+  @Prop({ required: true, default: uuidv4 })
+  auditId: string;
+
+  @Prop({ required: true })
+  userId: string;
+
+  @Prop({ required: true, default: Date.now })
+  startDateTime: Date;
+}
+
+export const AuditSessionSchema = SchemaFactory.createForClass(AuditSession);
+-----------END OF FILE----------- 
+ 
+                C:\Workspace\Web\Ai Business grow project\Back_end\src\audit\audit-session.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { AuditSession } from './audit-session.schema';
+
+@Injectable()
+export class AuditSessionService {
+  constructor(
+    @InjectModel(AuditSession.name) private readonly auditSessionModel: Model<AuditSession>,
+  ) {}
+
+  async createAuditSession(userId: string): Promise<AuditSession> {
+    const newAuditSession = new this.auditSessionModel({ userId });
+    return newAuditSession.save();
+  }
+}
+-----------END OF FILE----------- 
+ 
+                    C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\auth.controller.ts 
 -----------START OF FILE----------- 
 import { Body, Controller, Get, Post, UseGuards, UnauthorizedException, Req } from '@nestjs/common';
 import { AuthService } from './auth.service';
@@ -137,7 +440,7 @@ export class AuthController {
 }
 -----------END OF FILE----------- 
  
-    C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\auth.module.ts 
+                    C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\auth.module.ts 
 -----------START OF FILE----------- 
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
@@ -164,7 +467,7 @@ import { UserService } from 'src/users/user.service';
 export class AuthModule {}
 -----------END OF FILE----------- 
  
-    C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\auth.service.ts 
+                    C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\auth.service.ts 
 -----------START OF FILE----------- 
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -247,7 +550,7 @@ export class AuthService {
 }
 -----------END OF FILE----------- 
  
-    C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\jwt.strategy.ts 
+                    C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\jwt.strategy.ts 
 -----------START OF FILE----------- 
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
@@ -276,7 +579,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
 -----------END OF FILE----------- 
  
-        C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\dto\create-user.dto.ts 
+                        C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\dto\create-user.dto.ts 
 -----------START OF FILE----------- 
 import { IsEmail, IsNotEmpty, MinLength } from 'class-validator';
 
@@ -293,7 +596,7 @@ export class CreateUserDto {
 }
 -----------END OF FILE----------- 
  
-        C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\dto\google-token.dto.ts 
+                        C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\dto\google-token.dto.ts 
 -----------START OF FILE----------- 
 import { IsNotEmpty } from 'class-validator';
 
@@ -302,7 +605,7 @@ export class GoogleTokenDto {
   token: string;
 }-----------END OF FILE----------- 
  
-        C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\dto\login-user.dto.ts 
+                        C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\dto\login-user.dto.ts 
 -----------START OF FILE----------- 
 import { IsEmail, IsNotEmpty } from 'class-validator';
 
@@ -316,7 +619,7 @@ export class LoginUserDto {
 
 -----------END OF FILE----------- 
  
-        C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\dto\register-user.dto.ts 
+                        C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\dto\register-user.dto.ts 
 -----------START OF FILE----------- 
 import { IsEmail, IsNotEmpty, MinLength } from 'class-validator';
 
@@ -332,7 +635,7 @@ export class RegisterUserDto {
   password: string;
 }-----------END OF FILE----------- 
  
-            C:\Workspace\Web\Ai Business grow project\saas-backend\src\auth\interfaces\jwt-payload.interface.ts 
+                            C:\Workspace\Web\Ai Business grow project\Back_end\src\auth\interfaces\jwt-payload.interface.ts 
 -----------START OF FILE----------- 
 export interface JwtPayload {
     email: string;
@@ -340,7 +643,7 @@ export interface JwtPayload {
   }
   -----------END OF FILE----------- 
  
-                    C:\Workspace\Web\Ai Business grow project\saas-backend\src\common\guards\jwt-auth.guard.ts 
+                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\common\guards\jwt-auth.guard.ts 
 -----------START OF FILE----------- 
 import { Injectable } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
@@ -349,7 +652,7 @@ import { AuthGuard } from '@nestjs/passport';
 export class JwtAuthGuard extends AuthGuard('jwt') {}
 -----------END OF FILE----------- 
  
-                        C:\Workspace\Web\Ai Business grow project\saas-backend\src\config\mongoose.config.ts 
+                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\config\mongoose.config.ts 
 -----------START OF FILE----------- 
 import { MongooseModuleOptions } from '@nestjs/mongoose';
 import * as dotenv from 'dotenv';
@@ -360,7 +663,2367 @@ export const mongooseConfig: MongooseModuleOptions = {
   uri: process.env.MONGO_URI 
 };-----------END OF FILE----------- 
  
-                            C:\Workspace\Web\Ai Business grow project\saas-backend\src\users\user.module.ts 
+                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\config\crawler-config.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InclusionExclusionService, Rule } from './inclusion-exclusion.service';
+import { GeneralConfig } from './sub-configs/general.config';
+import { SitemapConfig } from './sub-configs/sitemap.config';
+import { DirectoryTreeConfig } from './sub-configs/directory-tree.config';
+import { MultithreadingConfig } from './sub-configs/multithreading.config';
+
+@Injectable()
+export class CrawlerConfigService {
+  private generalConfig: GeneralConfig;
+  private sitemapConfig: SitemapConfig;
+  private directoryTreeConfig: DirectoryTreeConfig;
+  private multithreadingConfig: MultithreadingConfig;
+  private specificUrlList: string[] = [];
+  private customStartingPoints: string[] = [];
+
+  constructor(
+    private configService: ConfigService,
+    private inclusionExclusionService: InclusionExclusionService
+  ) {
+    this.generalConfig = new GeneralConfig(configService);
+    this.sitemapConfig = new SitemapConfig(configService);
+    this.directoryTreeConfig = new DirectoryTreeConfig(configService);
+    this.multithreadingConfig = new MultithreadingConfig(configService);
+    this.loadRulesFromEnv();
+    this.loadSpecificUrlListFromEnv();
+    this.loadCustomStartingPointsFromEnv();
+  }
+
+  getCrawlerConfig() {
+    return {
+      ...this.generalConfig.getConfig(),
+      ...this.sitemapConfig.getConfig(),
+      ...this.directoryTreeConfig.getConfig(),
+      ...this.multithreadingConfig.getConfig(),
+      specificUrlList: this.specificUrlList,
+      customStartingPoints: this.customStartingPoints,
+    };
+  }
+
+  getRobotsTxtAdherence(): boolean {
+    return this.generalConfig.getConfig().respectRobotsTxt;
+  }
+
+  validateCrawlLimits(urlLimit: number, depthLimit: number): void {
+    if (urlLimit <= 0 || depthLimit <= 0) {
+      throw new Error('URL limit and depth limit must be positive integers');
+    }
+  }
+
+  getInclusionRules(): Rule[] {
+    return this.inclusionExclusionService.getInclusionRules();
+  }
+  
+  getExclusionRules(): Rule[] {
+    return this.inclusionExclusionService.getExclusionRules();
+  }
+
+  addInclusionRule(pattern: string, isRegex: boolean = false) {
+    this.inclusionExclusionService.addInclusionRule(pattern, isRegex);
+  }
+
+  addExclusionRule(pattern: string, isRegex: boolean = false) {
+    this.inclusionExclusionService.addExclusionRule(pattern, isRegex);
+  }
+
+  removeInclusionRule(pattern: string) {
+    this.inclusionExclusionService.removeInclusionRule(pattern);
+  }
+
+  removeExclusionRule(pattern: string) {
+    this.inclusionExclusionService.removeExclusionRule(pattern);
+  }
+
+  getSpecificUrlList(): string[] {
+    return this.specificUrlList;
+  }
+
+  setSpecificUrlList(urlList: string[]): void {
+    this.specificUrlList = urlList;
+  }
+
+  getDirectoryTreeConfig() {
+    return this.directoryTreeConfig.getConfig();
+  }
+
+  getCustomStartingPoints(): string[] {
+    return this.customStartingPoints;
+  }
+
+  setCustomStartingPoints(startingPoints: string[]): void {
+    this.customStartingPoints = startingPoints;
+  }
+
+  getMultithreadingConfig() {
+    return this.multithreadingConfig.getConfig();
+  }
+
+  private loadRulesFromEnv() {
+    const inclusionRules = this.configService.get<string>('CRAWLER_INCLUSION_RULES', '').split(',');
+    const exclusionRules = this.configService.get<string>('CRAWLER_EXCLUSION_RULES', '').split(',');
+
+    inclusionRules.forEach(rule => {
+      if (rule) this.addInclusionRule(rule.trim());
+    });
+
+    exclusionRules.forEach(rule => {
+      if (rule) this.addExclusionRule(rule.trim());
+    });
+  }
+
+  private loadSpecificUrlListFromEnv() {
+    const urlList = this.configService.get<string>('CRAWLER_SPECIFIC_URL_LIST', '').split(',');
+    this.specificUrlList = urlList.filter(url => url.trim() !== '');
+  }
+
+  private loadCustomStartingPointsFromEnv() {
+    const startingPoints = this.configService.get<string>('CRAWLER_CUSTOM_STARTING_POINTS', '').split(',');
+    this.customStartingPoints = startingPoints.filter(point => point.trim() !== '');
+  }
+}-----------END OF FILE----------- 
+ 
+                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\config\inclusion-exclusion.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+
+export interface Rule {
+    pattern: string;
+    isRegex: boolean;
+  }
+  
+@Injectable()
+export class InclusionExclusionService {
+  private inclusionRules: Rule[] = [];
+  private exclusionRules: Rule[] = [];
+
+  addInclusionRule(pattern: string, isRegex: boolean = false): void {
+    this.inclusionRules.push({ pattern, isRegex });
+  }
+
+  addExclusionRule(pattern: string, isRegex: boolean = false): void {
+    this.exclusionRules.push({ pattern, isRegex });
+  }
+
+  removeInclusionRule(pattern: string): void {
+    this.inclusionRules = this.inclusionRules.filter(rule => rule.pattern !== pattern);
+  }
+
+  removeExclusionRule(pattern: string): void {
+    this.exclusionRules = this.exclusionRules.filter(rule => rule.pattern !== pattern);
+  }
+
+  isUrlAllowed(url: string): boolean {
+    if (this.inclusionRules.length > 0) {
+      const isIncluded = this.inclusionRules.some(rule => this.matchRule(url, rule));
+      if (!isIncluded) return false;
+    }
+
+    return !this.exclusionRules.some(rule => this.matchRule(url, rule));
+  }
+
+  private matchRule(url: string, rule: Rule): boolean {
+    if (rule.isRegex) {
+      const regex = new RegExp(rule.pattern);
+      return regex.test(url);
+    } else {
+      return url.includes(rule.pattern);
+    }
+  }
+
+  getInclusionRules(): Rule[] {
+    return [...this.inclusionRules];
+  }
+
+  getExclusionRules(): Rule[] {
+    return [...this.exclusionRules];
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\config\sub-configs\directory-tree.config.ts 
+-----------START OF FILE----------- 
+import { ConfigService } from '@nestjs/config';
+import { getBooleanConfig, getNumberConfig, getArrayConfig } from '../utils/config-helpers';
+
+export class DirectoryTreeConfig {
+  constructor(private configService: ConfigService) {}
+
+  getConfig() {
+    return {
+      directoryTreeEnabled: getBooleanConfig(this.configService, 'CRAWLER_DIRECTORY_TREE_ENABLED', true),
+      directoryTreeMaxDepth: getNumberConfig(this.configService, 'CRAWLER_DIRECTORY_TREE_MAX_DEPTH', 5),
+      directoryTreeAllowedExtensions: getArrayConfig(this.configService, 'CRAWLER_DIRECTORY_TREE_ALLOWED_EXTENSIONS', ['html', 'htm', 'php', 'asp', 'aspx']),
+      directoryTreeExcludePatterns: getArrayConfig(this.configService, 'CRAWLER_DIRECTORY_TREE_EXCLUDE_PATTERNS', ['private', 'admin', 'backup']),
+    };
+  }
+}-----------END OF FILE----------- 
+ 
+                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\config\sub-configs\general.config.ts 
+-----------START OF FILE----------- 
+import { ConfigService } from '@nestjs/config';
+import { getNumberConfig, getStringConfig, getBooleanConfig, getArrayConfig } from '../utils/config-helpers';
+
+export class GeneralConfig {
+  constructor(private configService: ConfigService) {}
+
+  getConfig() {
+    return {
+      defaultUrlLimit: getNumberConfig(this.configService, 'CRAWLER_DEFAULT_URL_LIMIT', 1000),
+      defaultDepthLimit: getNumberConfig(this.configService, 'CRAWLER_DEFAULT_DEPTH_LIMIT', 5),
+      userAgent: getStringConfig(this.configService, 'CRAWLER_USER_AGENT', 'SeoOptimizer Crawler/1.0'),
+      respectRobotsTxt: getBooleanConfig(this.configService, 'CRAWLER_RESPECT_ROBOTS_TXT', true),
+      crawlDelay: getNumberConfig(this.configService, 'CRAWLER_CRAWL_DELAY', 1000),
+      followInternalLinks: getBooleanConfig(this.configService, 'CRAWLER_FOLLOW_INTERNAL_LINKS', true),
+      followExternalLinks: getBooleanConfig(this.configService, 'CRAWLER_FOLLOW_EXTERNAL_LINKS', false),
+      followSubfolderLinks: getBooleanConfig(this.configService, 'CRAWLER_FOLLOW_SUBFOLDER_LINKS', true),
+    };
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\config\sub-configs\multithreading.config.ts 
+-----------START OF FILE----------- 
+import { ConfigService } from '@nestjs/config';
+import { getNumberConfig, getBooleanConfig } from '../utils/config-helpers';
+
+export class MultithreadingConfig {
+  constructor(private configService: ConfigService) {}
+
+  getConfig() {
+    return {
+      enableMultithreading: getBooleanConfig(this.configService, 'CRAWLER_ENABLE_MULTITHREADING', true),
+      maxThreads: getNumberConfig(this.configService, 'CRAWLER_MAX_THREADS', 4),
+      threadPoolSize: getNumberConfig(this.configService, 'CRAWLER_THREAD_POOL_SIZE', 10),
+    };
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\config\sub-configs\sitemap.config.ts 
+-----------START OF FILE----------- 
+import { ConfigService } from '@nestjs/config';
+import { getBooleanConfig, getArrayConfig, getNumberConfig, getStringConfig } from '../utils/config-helpers';
+
+export class SitemapConfig {
+  constructor(private configService: ConfigService) {}
+
+  getConfig() {
+    return {
+      sitemapEnabled: getBooleanConfig(this.configService, 'CRAWLER_SITEMAP_ENABLED', true),
+      sitemapTypes: getArrayConfig(this.configService, 'CRAWLER_SITEMAP_TYPES', ['xml', 'rss', 'atom', 'txt']),
+      sitemapLimit: getNumberConfig(this.configService, 'CRAWLER_SITEMAP_LIMIT', 1000),
+      sitemapPriority: getStringConfig(this.configService, 'CRAWLER_SITEMAP_PRIORITY', 'high'),
+      extractSitemapsFromRobots: getBooleanConfig(this.configService, 'CRAWLER_EXTRACT_SITEMAPS_FROM_ROBOTS', true),
+      extractSitemapsFromHtml: getBooleanConfig(this.configService, 'CRAWLER_EXTRACT_SITEMAPS_FROM_HTML', true),
+    };
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\config\utils\config-helpers.ts 
+-----------START OF FILE----------- 
+import { ConfigService } from '@nestjs/config';
+
+export function getNumberConfig(configService: ConfigService, key: string, defaultValue: number): number {
+  const value = configService.get<number>(key);
+  return value !== undefined ? value : defaultValue;
+}
+
+export function getStringConfig(configService: ConfigService, key: string, defaultValue: string): string {
+  const value = configService.get<string>(key);
+  return value !== undefined ? value : defaultValue;
+}
+
+export function getBooleanConfig(configService: ConfigService, key: string, defaultValue: boolean): boolean {
+  const value = configService.get<string>(key);
+  if (value === undefined) return defaultValue;
+  return value.toLowerCase() === 'true';
+}
+
+export function getArrayConfig(configService: ConfigService, key: string, defaultValue: string[]): string[] {
+  const value = configService.get<string>(key);
+  return value ? value.split(',').map(item => item.trim()) : defaultValue;
+}
+-----------END OF FILE----------- 
+ 
+                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\core\crawler.controller.ts 
+-----------START OF FILE----------- 
+import { Controller, Post, Query, Body, ValidationPipe, Get } from '@nestjs/common';
+import { CrawlerService } from '../services/crawler.service';
+import { CrawlerConfigService } from '../config/crawler-config.service';
+import { SpecificUrlListDto } from '../dto/specific-url-list.dto';
+import { SitemapCrawlerService } from '../services/sitemap/sitemap-crawler.service';
+import { ConfigService } from '@nestjs/config';
+import { CrawlOptionsDto } from '../dto/crawl-options.dto';
+
+@Controller('crawler')
+export class CrawlerController {
+  constructor(
+    private readonly crawlerService: CrawlerService,
+    private readonly crawlerConfigService: CrawlerConfigService,
+    private readonly sitemapCrawlerService: SitemapCrawlerService,
+    private readonly configService: ConfigService
+  ) {}
+
+  @Post('crawl')
+  async crawlWebsite(
+    @Body() crawlOptionsDto: CrawlOptionsDto
+  ) {
+    const {
+      url,
+      urlLimit,
+      depthLimit,
+      followInternalLinks,
+      followExternalLinks,
+      followSubfolderLinks,
+      addInclusionRule,
+      addExclusionRule,
+      removeInclusionRule,
+      removeExclusionRule,
+      useDirectoryTreeCrawling,
+      directoryTreeRootPath,
+      specificUrlList,
+      customStartingPoints,
+      sitemapEnabled
+    } = crawlOptionsDto;
+
+    if (addInclusionRule) {
+      this.crawlerConfigService.addInclusionRule(addInclusionRule);
+    }
+    if (addExclusionRule) {
+      this.crawlerConfigService.addExclusionRule(addExclusionRule);
+    }
+    if (removeInclusionRule) {
+      this.crawlerConfigService.removeInclusionRule(removeInclusionRule);
+    }
+    if (removeExclusionRule) {
+      this.crawlerConfigService.removeExclusionRule(removeExclusionRule);
+    }
+
+    return this.crawlerService.crawlWebsite(url, {
+      urlLimit,
+      depthLimit,
+      followInternalLinks,
+      followExternalLinks,
+      followSubfolderLinks,
+      specificUrlList: specificUrlList?.urls,
+      useDirectoryTreeCrawling,
+      directoryTreeRootPath,
+      customStartingPoints,
+      sitemapEnabled
+    });
+  }
+
+  @Post('crawl-specific-urls')
+  async crawlSpecificUrls(
+    @Body(new ValidationPipe()) specificUrlListDto: SpecificUrlListDto,
+    @Query('urlLimit') urlLimit?: number,
+    @Query('depthLimit') depthLimit?: number
+  ) {
+    return this.crawlerService.crawlWebsite(specificUrlListDto.urls[0], {
+      urlLimit,
+      depthLimit,
+      specificUrlList: specificUrlListDto.urls
+    });
+  }
+
+  @Get('crawl-sitemap')
+  async crawlSitemap(@Query('url') url: string) {
+    const sitemaps = await this.sitemapCrawlerService.discoverSitemaps(url);
+    const crawlLimit = this.configService.get<number>('MANUAL_SITEMAP_CRAWL_LIMIT', 1000);
+    let allUrls: string[] = [];
+
+    for (const sitemap of sitemaps) {
+      const urls = await this.sitemapCrawlerService.fetchSitemap(sitemap);
+      allUrls = [...allUrls, ...urls];
+      if (allUrls.length >= crawlLimit) {
+        allUrls = allUrls.slice(0, crawlLimit);
+        break;
+      }
+    }
+
+    return this.crawlerService.crawlWebsite(url, {
+      specificUrlList: allUrls,
+      urlLimit: crawlLimit
+    });
+  }
+
+  @Post('crawl-directory-tree')
+  async crawlDirectoryTree(
+    @Query('rootPath') rootPath: string,
+    @Query('urlLimit') urlLimit?: number,
+    @Query('depthLimit') depthLimit?: number
+  ) {
+    return this.crawlerService.crawlWebsite(rootPath, {
+      urlLimit,
+      depthLimit,
+      useDirectoryTreeCrawling: true,
+      directoryTreeRootPath: rootPath
+    });
+  }
+}-----------END OF FILE----------- 
+ 
+                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\core\crawler.gateway.ts 
+-----------START OF FILE----------- 
+import { WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
+import { OnEvent } from '@nestjs/event-emitter';
+import { Server } from 'socket.io';
+
+@WebSocketGateway({
+  cors: {
+    origin: 'http://localhost:3000',
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
+})
+export class CrawlerGateway {
+  @WebSocketServer()
+  server: Server;
+
+  @OnEvent('crawling.progress')
+  handleCrawlingProgress(payload: { crawlingId: string; percentage: number; currentUrl: string }) {
+    this.server.emit('crawlingProgress', payload);
+  }
+
+  @OnEvent('crawling.completed')
+  handleCrawlingCompleted(payload: { crawlingId: string; averageScores: Record<string, number> }) {
+    this.server.emit('crawlingCompleted', payload);
+  }
+}
+
+-----------END OF FILE----------- 
+ 
+                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\core\crawler.module.ts 
+-----------START OF FILE----------- 
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { ConfigModule } from '@nestjs/config';
+import { CrawlerController } from './crawler.controller';
+import { CrawlerService } from '../services/crawler.service';
+import { CrawlerGateway } from './crawler.gateway';
+import { CrawlingSession, CrawlingSessionSchema } from '../schemas/crawling-session.schema';
+import { CrawlingData, CrawlingDataSchema } from '../schemas/crawling-data.schema';
+import { SitemapModule } from '../../seo/sitemap/sitemap.module';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ContentExtractor } from '../services/extraction/content-extractor';
+import { SEOAnalyzer } from '../services/analysis/seo-analyzer';
+import { UrlExtractor } from '../services/extraction/url-extractor';
+import { CrawlingDataRepository } from '../repository/crawling-data.repository';
+import { CrawlerConfigService } from '../config/crawler-config.service';
+import { RobotsTxtService } from '../services/robot/robots-txt.service';
+import { InclusionExclusionService } from '../config/inclusion-exclusion.service';
+import { SitemapCrawlerService } from '../services/sitemap/sitemap-crawler.service';
+import { SitemapParser } from '../services/sitemap/sitemap-parser';
+import { DirectoryTreeCrawlerService } from '../services/directory-tree/directory-tree-crawler.service';
+import { DirectoryTreeAnalyzer } from '../services/analysis/directory-tree-analyzer';
+import { CrawlerWorker } from '../services/crawler-worker.service';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+    }),
+    MongooseModule.forFeature([
+      { name: CrawlingSession.name, schema: CrawlingSessionSchema },
+      { name: CrawlingData.name, schema: CrawlingDataSchema },
+    ]),
+    SitemapModule,
+    EventEmitterModule.forRoot(),
+  ],
+  controllers: [CrawlerController],
+  providers: [
+    CrawlerService,
+    CrawlerGateway,
+    ContentExtractor,
+    SEOAnalyzer,
+    UrlExtractor,
+    CrawlingDataRepository,
+    CrawlerConfigService,
+    RobotsTxtService,
+    InclusionExclusionService,
+    SitemapCrawlerService,
+    SitemapParser,
+    DirectoryTreeCrawlerService,
+    DirectoryTreeAnalyzer,
+    CrawlerWorker,
+  ],
+  exports: [CrawlerService],
+})
+export class CrawlerModule {}-----------END OF FILE----------- 
+ 
+                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\dto\crawl-options.dto.ts 
+-----------START OF FILE----------- 
+import { IsOptional, IsString, IsNumber, IsBoolean, IsArray } from 'class-validator';
+import { Type } from 'class-transformer';
+import { SpecificUrlListDto } from './specific-url-list.dto';
+
+export class CrawlOptionsDto {
+  @IsString()
+  url: string;
+
+  @IsOptional()
+  @IsNumber()
+  urlLimit?: number;
+
+  @IsOptional()
+  @IsNumber()
+  depthLimit?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  followInternalLinks?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  followExternalLinks?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  followSubfolderLinks?: boolean;
+
+  @IsOptional()
+  @IsString()
+  addInclusionRule?: string;
+
+  @IsOptional()
+  @IsString()
+  addExclusionRule?: string;
+
+  @IsOptional()
+  @IsString()
+  removeInclusionRule?: string;
+
+  @IsOptional()
+  @IsString()
+  removeExclusionRule?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  useDirectoryTreeCrawling?: boolean;
+
+  @IsOptional()
+  @IsString()
+  directoryTreeRootPath?: string;
+
+  @IsOptional()
+  @Type(() => SpecificUrlListDto)
+  specificUrlList?: SpecificUrlListDto;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customStartingPoints?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  sitemapEnabled?: boolean;
+}
+-----------END OF FILE----------- 
+ 
+                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\dto\specific-url-list.dto.ts 
+-----------START OF FILE----------- 
+import { IsArray, IsUrl, ArrayMinSize } from 'class-validator';
+
+export class SpecificUrlListDto {
+  urls: string[];
+}
+-----------END OF FILE----------- 
+ 
+                                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\repository\crawling-data.repository.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { CrawlingData } from '../schemas/crawling-data.schema';
+
+@Injectable()
+export class CrawlingDataRepository {
+  constructor(
+    @InjectModel(CrawlingData.name) private crawlingDataModel: Model<CrawlingData>
+  ) {}
+
+  async updateCrawlingData(pageData: any): Promise<void> {
+    await this.crawlingDataModel.findOneAndUpdate(
+      { crawlingId: pageData.crawlingId, pageUrlRelative: pageData.pageUrlRelative },
+      pageData,
+      { upsert: true, new: true }
+    );
+  }
+
+  async updateDirectoryTreeData(crawlingId: string, directoryTreeData: any): Promise<void> {
+    const { directoryTree, depth, fileCount, folderCount, fileTypes } = this.processDirectoryTree(directoryTreeData);
+
+    await this.crawlingDataModel.findOneAndUpdate(
+      { crawlingId },
+      {
+        directoryTree,
+        directoryTreeDepth: depth,
+        directoryTreeFileCount: fileCount,
+        directoryTreeFolderCount: folderCount,
+        directoryTreeFileTypes: fileTypes,
+      },
+      { upsert: true, new: true }
+    );
+  }
+
+  private processDirectoryTree(tree: any, depth = 0): any {
+    let fileCount = 0;
+    let folderCount = 0;
+    const fileTypes = new Set<string>();
+
+    const processNode = (node: any, currentDepth: number) => {
+      if (node.type === 'file') {
+        fileCount++;
+        const fileExtension = node.name.split('.').pop();
+        if (fileExtension) {
+          fileTypes.add(fileExtension.toLowerCase());
+        }
+      } else if (node.type === 'directory') {
+        folderCount++;
+        if (node.children) {
+          node.children.forEach((child: any) => processNode(child, currentDepth + 1));
+        }
+      }
+    };
+
+    processNode(tree, 0);
+
+    return {
+      directoryTree: tree,
+      depth,
+      fileCount,
+      folderCount,
+      fileTypes: Array.from(fileTypes),
+    };
+  }
+
+  async calculateAverageScores(crawlingId: string): Promise<Record<string, number>> {
+    const allScores = await this.crawlingDataModel.find({ crawlingId }).select('seoScores -_id');
+    const totalScores: Record<string, number> = {};
+    let count = 0;
+
+    allScores.forEach(({ seoScores }) => {
+      count++;
+      Object.entries(seoScores).forEach(([key, value]) => {
+        totalScores[key] = (totalScores[key] || 0) + value;
+      });
+    });
+
+    const averageScores: Record<string, number> = {};
+    Object.entries(totalScores).forEach(([key, value]) => {
+      averageScores[key] = value / count;
+    });
+
+    return averageScores;
+  }
+}-----------END OF FILE----------- 
+ 
+                                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\schemas\crawling-data.schema.ts 
+-----------START OF FILE----------- 
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema()
+export class CrawlingData extends Document {
+  @Prop({ required: true })
+  crawlingId: string;
+
+  @Prop()
+  pageTitle: string;
+
+  @Prop({ required: true })
+  pageUrlRelative: string;
+
+  @Prop({ type: Object })
+  pageMetaData: Record<string, string>;
+
+  @Prop({ type: Array })
+  imageData: any[];
+
+  @Prop()
+  mainContent: string;
+
+  @Prop()
+  wordCount: number;
+
+  @Prop()
+  loadTime: number;
+
+  @Prop({ type: Object })
+  urlStructure: Record<string, string>;
+
+  @Prop({ type: Object })
+  brandingElements: Record<string, boolean>;
+
+  @Prop({ type: [String] })
+  structuredData: string[];
+
+  @Prop({ type: Object })
+  seoScores: Record<string, number>;
+
+  @Prop({ type: Object })
+  directoryTree: {
+    name: string;
+    type: string;
+    children: any[];
+  };
+
+  @Prop()
+  directoryTreeDepth: number;
+
+  @Prop()
+  directoryTreeFileCount: number;
+
+  @Prop()
+  directoryTreeFolderCount: number;
+
+  @Prop({ type: [String] })
+  directoryTreeFileTypes: string[];
+}
+
+export const CrawlingDataSchema = SchemaFactory.createForClass(CrawlingData);
+-----------END OF FILE----------- 
+ 
+                                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\schemas\crawling-session.schema.ts 
+-----------START OF FILE----------- 
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema()
+export class CrawlingSession extends Document {
+  @Prop({ required: true, unique: true })
+  crawlingId: string;
+
+  @Prop({ required: true })
+  websiteDomain: string;
+
+  @Prop({ type: [String] })
+  startingPoints: string[];
+}
+
+export const CrawlingSessionSchema = SchemaFactory.createForClass(CrawlingSession);
+-----------END OF FILE----------- 
+ 
+                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\crawler-worker.service.ts 
+-----------START OF FILE----------- 
+import { Injectable, Logger } from '@nestjs/common';
+import { ContentExtractor } from './extraction/content-extractor';
+import { SEOAnalyzer } from './analysis/seo-analyzer';
+import { UrlExtractor } from './extraction/url-extractor';
+import { CrawlingDataRepository } from '../repository/crawling-data.repository';
+import { CrawlerConfigService } from '../config/crawler-config.service';
+import { RobotsTxtService } from './robot/robots-txt.service';
+import { InclusionExclusionService } from '../config/inclusion-exclusion.service';
+import { DirectoryTreeAnalyzer } from './analysis/directory-tree-analyzer';
+import { DirectoryTreeCrawlerService } from './directory-tree/directory-tree-crawler.service';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
+
+@Injectable()
+export class CrawlerWorker {
+  private contentExtractor: ContentExtractor;
+  private seoAnalyzer: SEOAnalyzer;
+  private urlExtractor: UrlExtractor;
+  private readonly logger = new Logger(CrawlerWorker.name);
+
+  constructor(
+    private crawlingDataRepository: CrawlingDataRepository,
+    private crawlerConfigService: CrawlerConfigService,
+    private robotsTxtService: RobotsTxtService,
+    private inclusionExclusionService: InclusionExclusionService,
+    private directoryTreeAnalyzer: DirectoryTreeAnalyzer,
+    private directoryTreeCrawlerService: DirectoryTreeCrawlerService
+  ) {
+    this.contentExtractor = new ContentExtractor();
+    this.seoAnalyzer = new SEOAnalyzer(this.directoryTreeAnalyzer);
+    this.urlExtractor = new UrlExtractor(crawlerConfigService, robotsTxtService, inclusionExclusionService);
+  }
+
+  async crawlAndExtract(crawlingId: string, url: string, depth: number, crawlConfig: any): Promise<any> {
+    try {
+      const { $, loadTime, statusCode } = await this.fetchPageWithStatus(url);
+      
+      if (statusCode >= 400) {
+        this.logger.warn(`Broken link detected: ${url} (Status: ${statusCode})`);
+        await this.crawlingDataRepository.updateCrawlingData({
+          crawlingId,
+          pageUrlRelative: url,
+          isBroken: true,
+          statusCode,
+          depth,
+        });
+        return { newUrls: [] }; // Return empty newUrls to continue crawling
+      }
+
+      const pageData = this.contentExtractor.extractPageData($, url, loadTime);
+      const seoScores = this.seoAnalyzer.calculateSEOScores($, pageData);
+      
+      await this.crawlingDataRepository.updateCrawlingData({
+        ...pageData,
+        crawlingId,
+        seoScores,
+        depth,
+        statusCode,
+        isBroken: false,
+      });
+
+      const newUrls = await this.urlExtractor.extractLinks($, url, depth, crawlConfig);
+
+      return { pageData, seoScores, newUrls };
+    } catch (error) {
+      this.logger.error(`Error crawling ${url}: ${error.message}`);
+      await this.crawlingDataRepository.updateCrawlingData({
+        crawlingId,
+        pageUrlRelative: url,
+        isBroken: true,
+        error: error.message,
+        depth,
+      });
+      return { newUrls: [] }; // Return empty newUrls to continue crawling
+    }
+  }
+
+  private async fetchPageWithStatus(url: string): Promise<{ $: cheerio.CheerioAPI; loadTime: number; statusCode: number }> {
+    const startTime = Date.now();
+    try {
+      const response = await axios.get(url, { validateStatus: () => true });
+      const loadTime = Date.now() - startTime;
+      const $ = cheerio.load(response.data);
+      return { $, loadTime, statusCode: response.status };
+    } catch (error) {
+      const loadTime = Date.now() - startTime;
+      return { $: cheerio.load(''), loadTime, statusCode: error.response?.status || 0 };
+    }
+  }
+
+  async crawlDirectoryTree(crawlingId: string, rootPath: string, crawlConfig: any): Promise<any> {
+    const directoryTree = await this.directoryTreeCrawlerService.crawlDirectoryTree(rootPath);
+    const analysis = this.directoryTreeAnalyzer.analyzeDirectoryTree(directoryTree);
+    await this.crawlingDataRepository.updateCrawlingData({
+      crawlingId,
+      directoryTree,
+      directoryTreeAnalysis: analysis,
+    });
+    return { directoryTree, analysis };
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\crawler-worker.thread.ts 
+-----------START OF FILE----------- 
+import { parentPort, workerData } from 'worker_threads';
+import { CrawlerWorker } from './crawler-worker.service';
+import { CrawlingDataRepository } from '../repository/crawling-data.repository';
+import { CrawlerConfigService } from '../config/crawler-config.service';
+import { RobotsTxtService } from './robot/robots-txt.service';
+import { InclusionExclusionService } from '../config/inclusion-exclusion.service';
+import { DirectoryTreeAnalyzer } from './analysis/directory-tree-analyzer';
+import { DirectoryTreeCrawlerService } from './directory-tree/directory-tree-crawler.service';
+import { MongooseModule } from '@nestjs/mongoose';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { CrawlingData, CrawlingDataSchema } from '../schemas/crawling-data.schema';
+import { Model, Connection, createConnection } from 'mongoose';
+
+// Initialize MongoDB connection
+const connection: Connection = createConnection("mongodb://localhost:27017/seopt");
+
+// Initialize ConfigModule
+ConfigModule.forRoot({
+  isGlobal: true,
+  envFilePath: '.env',
+});
+
+// Create Mongoose model
+const crawlingDataModel: Model<CrawlingData> = connection.model<CrawlingData>('CrawlingData', CrawlingDataSchema);
+
+// Create instances of required services
+const crawlingDataRepository = new CrawlingDataRepository(crawlingDataModel);
+const configService = new ConfigService();
+const crawlerConfigService = new CrawlerConfigService(configService, new InclusionExclusionService());
+const robotsTxtService = new RobotsTxtService(configService);
+const inclusionExclusionService = new InclusionExclusionService();
+const directoryTreeAnalyzer = new DirectoryTreeAnalyzer();
+const directoryTreeCrawlerService = new DirectoryTreeCrawlerService(crawlerConfigService);
+
+// Initialize CrawlerWorker with injected dependencies
+const crawlerWorker = new CrawlerWorker(
+  crawlingDataRepository,
+  crawlerConfigService,
+  robotsTxtService,
+  inclusionExclusionService,
+  directoryTreeAnalyzer,
+  directoryTreeCrawlerService
+);
+
+if (parentPort) {
+  parentPort.on('message', async (message) => {
+    try {
+      let result;
+      switch (message.type) {
+        case 'crawlAndExtract':
+          result = await crawlerWorker.crawlAndExtract(message.crawlingId, message.url, message.depth, message.crawlConfig);
+          break;
+        case 'directoryTree':
+          result = await crawlerWorker.crawlDirectoryTree(message.crawlingId, message.rootPath, message.crawlConfig);
+          break;
+        default:
+          throw new Error(`Unknown task type: ${message.type}`);
+      }
+      parentPort.postMessage(result);
+    } catch (error) {
+      parentPort.postMessage({ error: error.message });
+    }
+  });
+}
+-----------END OF FILE----------- 
+ 
+                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\crawler.service.ts 
+-----------START OF FILE----------- 
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { CrawlingSession } from '../schemas/crawling-session.schema';
+import { SitemapService } from '../../seo/sitemap/sitemap.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { CrawlingDataRepository } from '../repository/crawling-data.repository';
+import { CrawlerConfigService } from '../config/crawler-config.service';
+import { SitemapCrawlerService } from './sitemap/sitemap-crawler.service';
+import { Worker } from 'worker_threads';
+import * as path from 'path';
+
+interface CrawlOptions {
+  urlLimit?: number;
+  depthLimit?: number;
+  followInternalLinks?: boolean;
+  followExternalLinks?: boolean;
+  followSubfolderLinks?: boolean;
+  specificUrlList?: string[];
+  useDirectoryTreeCrawling?: boolean;
+  directoryTreeRootPath?: string;
+  customStartingPoints?: string[];
+  sitemapEnabled?: boolean;
+}
+
+@Injectable()
+export class CrawlerService {
+  private readonly logger = new Logger(CrawlerService.name);
+  private workers: Worker[] = [];
+  private activeWorkers: number = 0;
+
+  constructor(
+    @InjectModel(CrawlingSession.name) private crawlingSessionModel: Model<CrawlingSession>,
+    private readonly sitemapService: SitemapService,
+    private eventEmitter: EventEmitter2,
+    private crawlingDataRepository: CrawlingDataRepository,
+    private crawlerConfigService: CrawlerConfigService,
+    private sitemapCrawlerService: SitemapCrawlerService,
+  ) {
+    this.initializeWorkers();
+  }
+
+  private initializeWorkers() {
+    const { maxThreads } = this.crawlerConfigService.getMultithreadingConfig();
+    for (let i = 0; i < maxThreads; i++) {
+      const worker = new Worker(path.resolve(__dirname, 'crawler-worker.thread.js'), {
+        workerData: { workerId: i }
+      });
+      this.workers.push(worker);
+    }
+  }
+
+  async crawlWebsite(url: string, options: CrawlOptions = {}): Promise<any> {
+    this.logger.log(`Starting crawl for website: ${url}`);
+    const domain = new URL(url).hostname;
+    const crawlingSession = await this.initiateCrawlingSession(domain);
+    this.logger.log(`Crawling session initiated with ID: ${crawlingSession.crawlingId}`);
+
+    const config = this.crawlerConfigService.getCrawlerConfig();
+    const finalUrlLimit = options.urlLimit || config.defaultUrlLimit;
+    const finalDepthLimit = options.depthLimit || config.defaultDepthLimit;
+    
+    this.logger.log(`Crawl limits set - URL limit: ${finalUrlLimit}, Depth limit: ${finalDepthLimit}`);
+    this.crawlerConfigService.validateCrawlLimits(finalUrlLimit, finalDepthLimit);
+
+    const crawlConfig = {
+      ...config,
+      ...options,
+      urlLimit: finalUrlLimit,
+      depthLimit: finalDepthLimit,
+    };
+
+    let result;
+    if (options.useDirectoryTreeCrawling && options.directoryTreeRootPath) {
+      this.logger.log(`Initiating directory tree crawl from root path: ${options.directoryTreeRootPath}`);
+      result = await this.crawlDirectoryTree(crawlingSession.crawlingId, options.directoryTreeRootPath, crawlConfig);
+    } else if (options.specificUrlList && options.specificUrlList.length > 0) {
+      this.logger.log(`Crawling specific URL list with ${options.specificUrlList.length} URLs`);
+      result = await this.crawlSpecificUrlList(crawlingSession.crawlingId, options.specificUrlList, crawlConfig);
+    } else {
+      result = await this.performRegularCrawl(crawlingSession.crawlingId, url, crawlConfig);
+    }
+
+    this.logger.log(`Crawl process completed. Calculating average scores.`);
+    const averageScores = await this.crawlingDataRepository.calculateAverageScores(crawlingSession.crawlingId);
+    this.eventEmitter.emit('crawling.completed', { crawlingId: crawlingSession.crawlingId, averageScores });
+
+    this.logger.log(`Crawl finished for website: ${url}`);
+    return { ...result, averageScores };
+  }
+
+  private async performRegularCrawl(crawlingId: string, url: string, crawlConfig: any): Promise<any> {
+    let urlsToVisit: { url: string; priority: number }[] = [];
+
+    if (crawlConfig.sitemapEnabled !== false) {
+      this.logger.log('Sitemap crawling enabled, discovering sitemaps');
+      const sitemaps = await this.sitemapCrawlerService.discoverSitemaps(url);
+      for (const sitemap of sitemaps) {
+        this.logger.log(`Fetching URLs from sitemap: ${sitemap}`);
+        const sitemapUrls = await this.sitemapCrawlerService.fetchSitemap(sitemap);
+        urlsToVisit.push(...sitemapUrls.map(url => ({ url, priority: 1 })));
+      }
+    }
+
+    if (!urlsToVisit.some(item => item.url === url)) {
+      this.logger.log(`Adding initial URL to crawl list: ${url}`);
+      urlsToVisit.unshift({ url, priority: 1 });
+    }
+
+    return this.distributeCrawlTasks(crawlingId, urlsToVisit, crawlConfig);
+  }
+
+  private async crawlDirectoryTree(crawlingId: string, rootPath: string, crawlConfig: any): Promise<any> {
+    const worker = this.getAvailableWorker();
+    this.activeWorkers++;
+    this.logger.log(`Active workers: ${this.activeWorkers}`);
+    return new Promise((resolve, reject) => {
+      worker.postMessage({ type: 'directoryTree', crawlingId, rootPath, crawlConfig });
+      worker.once('message', (result) => {
+        this.activeWorkers--;
+        this.logger.log(`Active workers: ${this.activeWorkers}`);
+        if (result.error) {
+          reject(new Error(result.error));
+        } else {
+          resolve(result);
+        }
+      });
+    });
+  }
+
+  private async crawlSpecificUrlList(crawlingId: string, urlList: string[], crawlConfig: any): Promise<any> {
+    const urlsToVisit = urlList.map(url => ({ url, priority: 1 }));
+    return this.distributeCrawlTasks(crawlingId, urlsToVisit, crawlConfig);
+  }
+
+  private async distributeCrawlTasks(crawlingId: string, urlsToVisit: { url: string; priority: number }[], crawlConfig: any): Promise<any> {
+    const { threadPoolSize } = this.crawlerConfigService.getMultithreadingConfig();
+    const taskQueue = urlsToVisit.slice(0, crawlConfig.urlLimit);
+    const processedUrls = new Set<string>();
+    let processedCount = 0;
+    let totalUrlsToProcess = Math.min(taskQueue.length, crawlConfig.urlLimit);
+  
+    this.logger.debug(`Starting distributeCrawlTasks with crawlingId: ${crawlingId}, urlsToVisit: ${urlsToVisit.length}, crawlConfig: ${JSON.stringify(crawlConfig)}`);
+  
+    while (taskQueue.length > 0 && processedCount < crawlConfig.urlLimit) {
+      const batch = taskQueue.splice(0, threadPoolSize).filter(({ url }) => !processedUrls.has(url));
+      this.logger.debug(`Processing batch of ${batch.length} URLs`);
+      
+      const tasks = batch.map(({ url }) => {
+        processedUrls.add(url);
+        return this.crawlAndExtractWithWorker(crawlingId, url, 0, crawlConfig);
+      });
+      const results = await Promise.all(tasks);
+  
+      processedCount += batch.length;
+      this.logger.debug(`Processed ${processedCount} URLs so far`);
+      
+      if (batch.length > 0) {
+        this.emitProgress(crawlingId, processedCount, totalUrlsToProcess, batch[batch.length - 1].url);
+      }
+  
+      if (processedCount < crawlConfig.urlLimit) {
+        this.logger.debug(`Adding new URLs to queue`);
+        const newUrls = results.flatMap(result => result.newUrls || []);
+        const uniqueNewUrls = newUrls.filter(url => !processedUrls.has(url));
+        taskQueue.push(...uniqueNewUrls.map(url => ({ url, priority: 0 })));
+        totalUrlsToProcess = Math.min(totalUrlsToProcess + uniqueNewUrls.length, crawlConfig.urlLimit);
+      }
+    }
+  
+    this.logger.debug(`Finished distributeCrawlTasks, processed ${processedCount} URLs in total`);
+    this.emitProgress(crawlingId, processedCount, totalUrlsToProcess, 'Completed');
+  
+    return { crawlingId };
+  }
+
+  private crawlAndExtractWithWorker(crawlingId: string, url: string, depth: number, crawlConfig: any): Promise<any> {
+    const worker = this.getAvailableWorker();
+    this.activeWorkers++;
+    this.logger.log(`Active workers: ${this.activeWorkers}`);
+    return new Promise((resolve, reject) => {
+      worker.postMessage({ type: 'crawlAndExtract', crawlingId, url, depth, crawlConfig });
+      worker.once('message', (result) => {
+        this.activeWorkers--;
+        this.logger.log(`Active workers: ${this.activeWorkers}`);
+        if (result.error) {
+          reject(new Error(result.error));
+        } else {
+          resolve(result);
+        }
+      });
+    });
+  }
+
+  private getAvailableWorker(): Worker {
+    const worker = this.workers.shift();
+    this.workers.push(worker);
+    return worker;
+  }
+
+  private emitProgress(crawlingId: string, processed: number, total: number, currentUrl: string) {
+    const percentage = Math.min(100, (processed / total) * 100);
+    this.logger.debug(`Crawl progress: ${percentage.toFixed(2)}% - Current URL: ${currentUrl}`);
+    this.eventEmitter.emit('crawling.progress', { crawlingId, percentage, currentUrl });
+  }
+
+  private async initiateCrawlingSession(domain: string): Promise<CrawlingSession> {
+    this.logger.log(`Initiating crawling session for domain: ${domain}`);
+    let session = await this.crawlingSessionModel.findOne({ websiteDomain: domain }).exec();
+    if (!session) {
+      session = new this.crawlingSessionModel({
+        crawlingId: this.generateCrawlingId(domain),
+        websiteDomain: domain,
+      });
+      await session.save();
+      this.logger.log(`New crawling session created with ID: ${session.crawlingId}`);
+    } else {
+      this.logger.log(`Existing crawling session found with ID: ${session.crawlingId}`);
+    }
+    return session;
+  }
+
+  private generateCrawlingId(domain: string): string {
+    return `crawl_${domain.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  }
+}-----------END OF FILE----------- 
+ 
+                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\analysis\directory-tree-analyzer.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class DirectoryTreeAnalyzer {
+  analyzeDirectoryTree(directoryTree: any): Record<string, number | string | Record<string, number>> {
+    const analysis: Record<string, number | string | Record<string, number>> = {
+      totalFiles: 0,
+      totalFolders: 0,
+      maxDepth: 0,
+      averageFilesPerFolder: 0,
+      mostCommonFileType: '',
+      fileTypeDistribution: {} as Record<string, number>,
+    };
+
+    this.traverseTree(directoryTree, 0, analysis);
+
+    analysis.averageFilesPerFolder = analysis.totalFiles as number / (analysis.totalFolders as number);
+    analysis.mostCommonFileType = this.getMostCommonFileType(analysis.fileTypeDistribution as Record<string, number>);
+
+    return analysis;
+  }
+
+  private traverseTree(node: any, depth: number, analysis: Record<string, number | string | Record<string, number>>) {
+    if (node.type === 'file') {
+      analysis.totalFiles = (analysis.totalFiles as number) + 1;
+      const fileType = this.getFileType(node.name);
+      (analysis.fileTypeDistribution as Record<string, number>)[fileType] = ((analysis.fileTypeDistribution as Record<string, number>)[fileType] || 0) + 1;
+    } else if (node.type === 'directory') {
+      analysis.totalFolders = (analysis.totalFolders as number) + 1;
+      analysis.maxDepth = Math.max(analysis.maxDepth as number, depth);
+      if (node.children) {
+        node.children.forEach((child: any) => this.traverseTree(child, depth + 1, analysis));
+      }
+    }
+  }
+
+  private getFileType(fileName: string): string {
+    const parts = fileName.split('.');
+    return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : 'unknown';
+  }
+
+  private getMostCommonFileType(fileTypeDistribution: Record<string, number>): string {
+    return Object.entries(fileTypeDistribution).reduce((a, b) => a[1] > b[1] ? a : b)[0];
+  }
+
+  generateInsights(analysis: Record<string, number | string | Record<string, number>>): string[] {
+    const insights: string[] = [];
+
+    insights.push(`The website contains ${analysis.totalFiles} files in ${analysis.totalFolders} folders.`);
+    insights.push(`The deepest folder is ${analysis.maxDepth} levels deep.`);
+    insights.push(`On average, there are ${(analysis.averageFilesPerFolder as number).toFixed(2)} files per folder.`);
+    insights.push(`The most common file type is ${analysis.mostCommonFileType}.`);
+
+    if ((analysis.maxDepth as number) > 5) {
+      insights.push("The folder structure is quite deep. Consider simplifying for better organization.");
+    }
+
+    if ((analysis.averageFilesPerFolder as number) > 20) {
+      insights.push("Some folders contain a large number of files. Consider reorganizing for better maintainability.");
+    }
+
+    return insights;
+  }
+}-----------END OF FILE----------- 
+ 
+                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\analysis\seo-analyzer.ts 
+-----------START OF FILE----------- 
+import * as cheerio from 'cheerio';
+import { Injectable } from '@nestjs/common';
+import { DirectoryTreeAnalyzer } from './directory-tree-analyzer';
+
+@Injectable()
+export class SEOAnalyzer {
+  constructor(private readonly directoryTreeAnalyzer: DirectoryTreeAnalyzer) {}
+
+  calculateSEOScores($: cheerio.CheerioAPI, pageData: any): Record<string, number> {
+    const scores: Record<string, number> = {};
+  
+    scores.performance = this.calculatePerformanceScore(pageData.loadTime);
+    scores.content = this.calculateContentScore(pageData.mainContent);
+    scores.seoBestPractices = this.calculateSEOBestPracticesScore($, pageData);
+    scores.technicalSEO = this.calculateTechnicalSEOScore($, pageData);
+    scores.userExperience = this.calculateUserExperienceScore($, pageData);
+    scores.mobileFriendliness = this.calculateMobileFriendlinessScore($);
+    scores.directoryStructure = this.calculateDirectoryStructureScore(pageData.directoryTree);
+  
+    return scores;
+  }
+  
+  private calculatePerformanceScore(loadTime: number): number {
+     return Math.min(100, Math.max(0, 100 - (loadTime - 1000) / 100));
+  }
+  
+  private calculateContentScore(content: string): number {
+    if (!content) return 0;
+  
+    const text = cheerio.load(content).text();
+    const wordCount = text.split(/\s+/).length;
+    const linkDensity = Math.min(1, (content.match(/<a /g) || []).length / wordCount);
+    const headingDensity = Math.min(1, (content.match(/<h[1-6]/g) || []).length / wordCount);
+    const paragraphDensity = Math.min(1, (content.match(/<p/g) || []).length / wordCount);
+  
+    let score = wordCount;
+    score *= (1 - linkDensity);
+    score *= (1 + headingDensity * 0.5);
+    score *= (1 + paragraphDensity * 0.5);
+  
+    if (content.includes('<article')) score *= 1.2;
+    if (content.includes('<section')) score *= 1.1;
+    if (content.includes('<figure')) score *= 1.05;
+  
+    return 1 + 99 / (1 + Math.exp(-score / 1000));
+  }
+  
+  private calculateSEOBestPracticesScore($: cheerio.CheerioAPI, pageData: any): number {
+    let score = 100;
+  
+    if (!$('title').length) score -= 10;
+    if (!$('meta[name="description"]').length) score -= 10;
+    if (!$('h1').length) score -= 10;
+    if ($('h2').length < 2) score -= 5;
+  
+    const imagesWithoutAlt = $('img:not([alt])').length;
+    score -= imagesWithoutAlt * 2;
+  
+    const internalLinks = $('a[href^="/"], a[href^="' + pageData.urlStructure.hostname + '"]').length;
+    if (internalLinks < 5) score -= 10;
+  
+    return Math.max(0, score);
+  }
+  
+  private calculateTechnicalSEOScore($: cheerio.CheerioAPI, pageData: any): number {
+    let score = 100;
+  
+    if (!$('link[rel="canonical"]').length) score -= 10;
+    if (!pageData.sitemapPresent) score -= 10;
+    if (!pageData.robotsTxtPresent) score -= 10;
+    if (pageData.urlStructure.protocol !== 'https:') score -= 20;
+    if (!$('meta[name="viewport"]').length) score -= 10;
+  
+    return Math.max(0, score);
+  }
+  
+  private calculateUserExperienceScore($: cheerio.CheerioAPI, pageData: any): number {
+    let score = 100;
+  
+    const readabilityScore = this.calculateReadabilityScore(pageData.mainContent);
+    score -= Math.max(0, 20 - readabilityScore);
+  
+    if (!$('*:contains("contact"), *:contains("email"), *:contains("phone")').length) score -= 10;
+    if (!$('a[href*="facebook"], a[href*="twitter"], a[href*="linkedin"], a[href*="instagram"]').length) score -= 10;
+    if (!$('nav, #nav, .nav, #menu, .menu').length) score -= 10;
+  
+    return Math.max(0, score);
+  }
+  
+  private calculateMobileFriendlinessScore($: cheerio.CheerioAPI): number {
+    let score = 100;
+  
+    if (!$('meta[name="viewport"]').length) score -= 50;
+  
+    const smallButtons = $('button, .button, [role="button"]').filter((_, el) => {
+      const width = $(el).css('width');
+      const height = $(el).css('height');
+      return (width && parseInt(width) < 44) || (height && parseInt(height) < 44);
+    }).length;
+    score -= smallButtons * 5;
+  
+    const smallFonts = $('*').filter((_, el) => {
+      const fontSize = $(el).css('font-size');
+      return fontSize && parseInt(fontSize) < 12;
+    }).length;
+    score -= smallFonts * 2;
+  
+    return Math.max(0, score);
+  }
+  
+  private calculateReadabilityScore(content: string): number {
+    const text = cheerio.load(content).text();
+    const words = text.split(/\s+/).length;
+    const sentences = text.split(/[.!?]+/).length;
+    const avgWordsPerSentence = words / sentences;
+  
+    return Math.max(0, 100 - Math.abs(avgWordsPerSentence - 15) * 5);
+  }
+      private calculateDirectoryStructureScore(directoryTree: any): number {
+        if (!directoryTree) return 0;
+
+        const analysis = this.directoryTreeAnalyzer.analyzeDirectoryTree(directoryTree);
+        let score = 100;
+
+        if ((analysis.maxDepth as number) > 5) score -= ((analysis.maxDepth as number) - 5) * 5;
+        if ((analysis.averageFilesPerFolder as number) > 20) score -= ((analysis.averageFilesPerFolder as number) - 20) * 2;
+        if ((analysis.totalFiles as number) > 1000) score -= 10;
+        if ((analysis.totalFolders as number) > 100) score -= 10;
+
+        const fileTypeVariety = Object.keys(analysis.fileTypeDistribution as Record<string, number>).length;
+        if (fileTypeVariety < 3) score -= 10;
+        if (fileTypeVariety > 10) score -= 5;
+
+        return Math.max(0, score);
+      }
+    }-----------END OF FILE----------- 
+ 
+                                                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\directory-tree\directory-tree-crawler.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { CrawlerConfigService } from '../../config/crawler-config.service';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+@Injectable()
+export class DirectoryTreeCrawlerService {
+  constructor(private readonly crawlerConfigService: CrawlerConfigService) {}
+
+  async crawlDirectoryTree(rootPath: string): Promise<any> {
+    const config = this.crawlerConfigService.getDirectoryTreeConfig();
+    return this.crawlDirectory(rootPath, 0, config);
+  }
+
+  private async crawlDirectory(dirPath: string, currentDepth: number, config: any): Promise<any> {
+    if (currentDepth > config.directoryTreeMaxDepth) {
+      return null;
+    }
+
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    const result: any = { name: path.basename(dirPath), type: 'directory', children: [] };
+
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+
+      if (this.shouldExclude(entry.name, config.directoryTreeExcludePatterns)) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        const subDir = await this.crawlDirectory(fullPath, currentDepth + 1, config);
+        if (subDir) {
+          result.children.push(subDir);
+        }
+      } else if (entry.isFile() && this.isAllowedFile(entry.name, config.directoryTreeAllowedExtensions)) {
+        result.children.push({ name: entry.name, type: 'file' });
+      }
+    }
+
+    return result;
+  }
+
+  private shouldExclude(name: string, excludePatterns: string[]): boolean {
+    return excludePatterns.some(pattern => name.toLowerCase().includes(pattern.toLowerCase()));
+  }
+
+  private isAllowedFile(name: string, allowedExtensions: string[]): boolean {
+    const ext = path.extname(name).toLowerCase().slice(1);
+    return allowedExtensions.includes(ext);
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\extraction\content-extractor.ts 
+-----------START OF FILE----------- 
+import * as cheerio from 'cheerio';
+import axios from 'axios';
+
+export class ContentExtractor {
+  async fetchPage(url: string): Promise<{ $: cheerio.CheerioAPI; loadTime: number }> {
+    const startTime = Date.now();
+    const response = await axios.get(url);
+    const loadTime = Date.now() - startTime;
+    const $ = cheerio.load(response.data);
+    return { $, loadTime };
+  }
+
+  extractPageData($: cheerio.CheerioAPI, url: string, loadTime: number): any {
+    const { bestContent, goodContent, contentScore } = this.extractMainContent($);
+
+    return {
+      pageTitle: $('title').text(),
+      pageUrlRelative: new URL(url).pathname,
+      pageMetaData: this.extractMetadata($),
+      imageData: this.extractImageData($),
+      mainContent: bestContent,
+      goodContent: goodContent,
+      contentScore: contentScore,
+      wordCount: this.countWords($('body').text()),
+      loadTime,
+      urlStructure: this.analyzeUrlStructure(url),
+      brandingElements: this.detectBrandingElements($),
+      structuredData: this.extractStructuredData($),
+    };
+  }
+
+  private extractMetadata($: cheerio.CheerioAPI): Record<string, string> {
+    const metadata: Record<string, string> = {};
+    $('meta').each((_, el) => {
+      const name = $(el).attr('name') || $(el).attr('property');
+      const content = $(el).attr('content');
+      if (name && content) {
+        metadata[name] = content;
+      }
+    });
+    metadata['canonical'] = $('link[rel="canonical"]').attr('href') || '';
+    $('link[rel="alternate"][hreflang]').each((_, el) => {
+      const hreflang = $(el).attr('hreflang');
+      const href = $(el).attr('href');
+      if (hreflang && href) {
+        metadata[`hreflang:${hreflang}`] = href;
+      }
+    });
+    return metadata;
+  }
+
+  private extractImageData($: cheerio.CheerioAPI): any[] {
+    return $('img').map((_, el) => ({
+        src: $(el).attr('src'),
+        alt: $(el).attr('alt'),
+        title: $(el).attr('title'),
+        width: $(el).attr('width'),
+        height: $(el).attr('height'),
+      })).get();
+  }
+
+  private extractMainContent($: cheerio.CheerioAPI): { bestContent: string; goodContent: string[]; contentScore: number } {
+    const contentSelectors = [
+        'article', 'main', '#content', '.content', '.post-content',
+        '[role="main"]', '.entry-content', '.post', '.article'
+      ];
+    
+      let bestContent = '';
+      let bestScore = 0;
+      let goodContent: string[] = [];
+    
+      // Try common content selectors first
+      for (const selector of contentSelectors) {
+        const $content = $(selector);
+        if ($content.length) {
+          const content = $content.first().html();
+          const score = this.calculateContentScore(content);
+          if (score > bestScore) {
+            if (bestContent) {
+              goodContent.push(bestContent);
+            }
+            bestContent = content;
+            bestScore = score;
+          } else if (score > bestScore * 0.7) {
+            goodContent.push(content);
+          }
+        }
+      }
+    
+      // If no suitable content found, analyze all top-level elements
+      if (!bestContent) {
+        $('body > *').each((_, element) => {
+          const $element = $(element);
+          const content = $element.html();
+          const score = this.calculateContentScore(content);
+          if (score > bestScore) {
+            if (bestContent) {
+              goodContent.push(bestContent);
+            }
+            bestContent = content;
+            bestScore = score;
+          } else if (score > bestScore * 0.7) {
+            goodContent.push(content);
+          }
+        });
+      }
+    
+      // If still no content, fallback to body
+      if (!bestContent) {
+        bestContent = $('body').html();
+        bestScore = this.calculateContentScore(bestContent);
+      }
+    
+      return { bestContent, goodContent, contentScore: bestScore };
+  }
+
+  private calculateContentScore(content: string): number {
+    if (!content) return 0;
+  
+    const text = cheerio.load(content).text();
+    const wordCount = text.split(/\s+/).length;
+    const linkDensity = Math.min(1, (content.match(/<a /g) || []).length / wordCount);
+    const headingDensity = Math.min(1, (content.match(/<h[1-6]/g) || []).length / wordCount);
+    const paragraphDensity = Math.min(1, (content.match(/<p/g) || []).length / wordCount);
+  
+    let score = wordCount;
+    score *= (1 - linkDensity);
+    score *= (1 + headingDensity * 0.5);
+    score *= (1 + paragraphDensity * 0.5);
+  
+    if (content.includes('<article')) score *= 1.2;
+    if (content.includes('<section')) score *= 1.1;
+    if (content.includes('<figure')) score *= 1.05;
+  
+    // Apply activation function to keep score between 1 and 100
+    return 1 + 99 / (1 + Math.exp(-score / 1000));
+  }
+
+  private countWords(text: string): number {
+    return text.trim().split(/\s+/).length;
+  }
+
+  private analyzeUrlStructure(url: string): Record<string, string> {
+    const parsedUrl = new URL(url);
+    return {
+      protocol: parsedUrl.protocol,
+      hostname: parsedUrl.hostname,
+      pathname: parsedUrl.pathname,
+      search: parsedUrl.search,
+      hash: parsedUrl.hash,
+    };
+  }
+
+  private detectBrandingElements($: cheerio.CheerioAPI): Record<string, boolean> {
+    return {
+        hasReviews: $('*:contains("review"), *:contains("testimonial")').length > 0,
+        hasChatbot: $('*:contains("chat"), *[id*="chat"], *[class*="chat"]').length > 0,
+        hasAboutUs: $('a[href*="about"], *:contains("About Us")').length > 0,
+        hasMediaSection: $('*:contains("Media"), a[href*="media"], a[href*="press"]').length > 0,
+        hasProjectsSection: $('*:contains("Projects"), a[href*="project"], a[href*="portfolio"]').length > 0,
+      };
+  }
+
+  private extractStructuredData($: cheerio.CheerioAPI): string[] {
+    return $('script[type="application/ld+json"]')
+    .map((_, el) => $(el).html())
+    .get();
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\extraction\url-extractor.ts 
+-----------START OF FILE----------- 
+import * as cheerio from 'cheerio';
+import { Injectable } from '@nestjs/common';
+import { CrawlerConfigService } from '../../config/crawler-config.service';
+import { RobotsTxtService } from '../robot/robots-txt.service';
+import { InclusionExclusionService } from '../../config/inclusion-exclusion.service';
+
+@Injectable()
+export class UrlExtractor {
+  constructor(
+    private crawlerConfigService: CrawlerConfigService,
+    private robotsTxtService: RobotsTxtService,
+    private inclusionExclusionService: InclusionExclusionService
+  ) {}
+
+  async extractLinks($: cheerio.CheerioAPI, url: string, currentDepth: number, crawlConfig: any): Promise<string[]> {
+    const baseUrl = new URL(url);
+    const validExtensions = new Set(['', '.html', '.htm', '.php', '.asp', '.aspx']);
+
+    const newUrls = $('a').map((_, el) => {
+      const href = $(el).attr('href');
+      if (href) {
+        try {
+          const newUrl = new URL(href, baseUrl.origin);
+          const pathname = newUrl.pathname.toLowerCase();
+          const extension = pathname.substring(pathname.lastIndexOf('.'));
+
+          if (this.shouldFollowLink(newUrl, baseUrl, crawlConfig) &&
+              (validExtensions.has(extension) || !pathname.includes('.')) &&
+              this.inclusionExclusionService.isUrlAllowed(newUrl.href)) {
+            return newUrl.href;
+          }
+        } catch {
+          // Invalid URL, ignore
+        }
+      }
+      return null;
+    }).get().filter(Boolean);
+
+    const uniqueUrls = [...new Set(newUrls)];
+    const allowedUrls = await this.filterAllowedUrls(uniqueUrls);
+
+    return allowedUrls;
+  }
+
+  private shouldFollowLink(newUrl: URL, baseUrl: URL, config: any): boolean {
+    if (newUrl.hostname === baseUrl.hostname) {
+      if (newUrl.pathname.startsWith(baseUrl.pathname)) {
+        return config.followSubfolderLinks;
+      }
+      return config.followInternalLinks;
+    }
+    return config.followExternalLinks;
+  }
+
+  private async filterAllowedUrls(urls: string[]): Promise<string[]> {
+    const allowedUrls = await Promise.all(
+      urls.map(async (url) => {
+        const isAllowed = await this.robotsTxtService.isAllowed(url);
+        return isAllowed ? url : null;
+      })
+    );
+    return allowedUrls.filter(Boolean);
+  }
+
+  async extractSitemapUrlsFromRobotsTxt(url: string): Promise<string[]> {
+    const config = this.crawlerConfigService.getCrawlerConfig();
+    if (!config.extractSitemapsFromRobots) {
+      return [];
+    }
+
+    try {
+      const robotsTxtUrl = new URL('/robots.txt', url).toString();
+      const robotsTxtContent = await this.robotsTxtService.fetchRobotsTxt(robotsTxtUrl);
+      const sitemapUrls = robotsTxtContent.match(/Sitemap: (.*)/gi);
+      return sitemapUrls ? sitemapUrls.map(line => line.split(': ')[1]) : [];
+    } catch (error) {
+      console.error(`Error extracting sitemap URLs from robots.txt: ${error.message}`);
+      return [];
+    }
+  }
+
+  async extractSitemapUrlsFromHtml($: cheerio.CheerioAPI, url: string): Promise<string[]> {
+    const config = this.crawlerConfigService.getCrawlerConfig();
+    if (!config.extractSitemapsFromHtml) {
+      return [];
+    }
+
+    const sitemapUrls: string[] = [];
+
+    // Check for sitemap links in the HTML
+    $('a[href*="sitemap"]').each((_, el) => {
+      const href = $(el).attr('href');
+      if (href) {
+        sitemapUrls.push(new URL(href, url).toString());
+      }
+    });
+
+    // Check for sitemap references in meta tags
+    $('meta[name="sitemap"]').each((_, el) => {
+      const content = $(el).attr('content');
+      if (content) {
+        sitemapUrls.push(new URL(content, url).toString());
+      }
+    });
+
+    return [...new Set(sitemapUrls)];
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\robot\robots-txt.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
+
+@Injectable()
+export class RobotsTxtService {
+  private robotsTxtCache: Map<string, string> = new Map();
+
+  constructor(private configService: ConfigService) {}
+
+  async fetchRobotsTxt(url: string): Promise<string> {
+    const robotsTxtUrl = new URL('/robots.txt', url).toString();
+    try {
+      const response = await axios.get(robotsTxtUrl);
+      return response.data;
+    } catch (error) {
+      console.error(`Error fetching robots.txt from ${robotsTxtUrl}: ${error.message}`);
+      return '';
+    }
+  }
+
+  async parseRobotsTxt(url: string): Promise<Map<string, string[]>> {
+    const domain = new URL(url).origin;
+    if (!this.robotsTxtCache.has(domain)) {
+      const robotsTxtContent = await this.fetchRobotsTxt(domain);
+      this.robotsTxtCache.set(domain, robotsTxtContent);
+    }
+    
+    const content = this.robotsTxtCache.get(domain);
+    const rules = new Map<string, string[]>();
+    let currentUserAgent = '*';
+
+    content.split('\n').forEach(line => {
+      line = line.trim().toLowerCase();
+      if (line.startsWith('user-agent:')) {
+        currentUserAgent = line.split(':')[1].trim();
+        if (!rules.has(currentUserAgent)) {
+          rules.set(currentUserAgent, []);
+        }
+      } else if (line.startsWith('disallow:') || line.startsWith('allow:')) {
+        const [directive, path] = line.split(':');
+        rules.get(currentUserAgent).push(`${directive}:${path.trim()}`);
+      }
+    });
+
+    return rules;
+  }
+
+  async isAllowed(url: string): Promise<boolean> {
+    const rules = await this.parseRobotsTxt(url);
+    const userAgent = this.configService.get<string>('CRAWLER_USER_AGENT');
+    const path = new URL(url).pathname;
+
+    const relevantRules = rules.get(userAgent) || rules.get('*') || [];
+
+    for (const rule of relevantRules) {
+      const [directive, rulePath] = rule.split(':');
+      if (path.startsWith(rulePath)) {
+        return directive === 'allow';
+      }
+    }
+
+    return true;
+  }
+}-----------END OF FILE----------- 
+ 
+                                                                                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\sitemap\sitemap-crawler.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { CrawlerConfigService } from '../../config/crawler-config.service';
+import axios from 'axios';
+import * as xml2js from 'xml2js';
+import * as cheerio from 'cheerio';
+
+@Injectable()
+export class SitemapCrawlerService {
+  constructor(private readonly crawlerConfigService: CrawlerConfigService) {}
+
+  async discoverSitemaps(url: string): Promise<string[]> {
+    const config = this.crawlerConfigService.getCrawlerConfig();
+    const baseUrl = new URL(url).origin;
+    const sitemaps: string[] = [];
+
+    // Check robots.txt for sitemaps
+    const robotsTxtUrl = `${baseUrl}/robots.txt`;
+    try {
+      const robotsTxtResponse = await axios.get(robotsTxtUrl);
+      const robotsTxtContent = robotsTxtResponse.data;
+      const sitemapUrls = robotsTxtContent.match(/Sitemap: (.*)/gi);
+      if (sitemapUrls) {
+        sitemaps.push(...sitemapUrls.map(line => line.split(': ')[1]));
+      }
+    } catch (error) {
+      console.error(`Error fetching robots.txt: ${error.message}`);
+    }
+
+    // Check common sitemap locations
+    const commonSitemapPaths = [
+      '/sitemap.xml',
+      '/sitemap_index.xml',
+      '/sitemap.txt',
+      '/sitemap.rss',
+      '/sitemap.atom',
+    ];
+
+    for (const path of commonSitemapPaths) {
+      const sitemapUrl = `${baseUrl}${path}`;
+      try {
+        await axios.head(sitemapUrl);
+        sitemaps.push(sitemapUrl);
+      } catch (error) {
+        // Sitemap not found at this location, continue to next
+      }
+    }
+
+    return sitemaps;
+  }
+
+  async fetchSitemap(url: string): Promise<string[]> {
+    const config = this.crawlerConfigService.getCrawlerConfig();
+    const response = await axios.get(url, {
+      headers: { 'User-Agent': config.userAgent },
+    });
+
+    const contentType = response.headers['content-type'];
+    if (contentType.includes('application/xml') || contentType.includes('text/xml')) {
+      return this.parseXmlSitemap(response.data);
+    } else if (contentType.includes('text/plain')) {
+      return this.parseTxtSitemap(response.data);
+    } else if (contentType.includes('application/rss+xml')) {
+      return this.parseRssSitemap(response.data);
+    } else if (contentType.includes('application/atom+xml')) {
+      return this.parseAtomSitemap(response.data);
+    } else {
+      throw new Error(`Unsupported sitemap format: ${contentType}`);
+    }
+  }
+
+  private async parseXmlSitemap(content: string): Promise<string[]> {
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(content);
+    const urls: string[] = [];
+
+    if (result.sitemapindex) {
+      // This is a sitemap index
+      for (const sitemap of result.sitemapindex.sitemap) {
+        const nestedUrls = await this.fetchSitemap(sitemap.loc[0]);
+        urls.push(...nestedUrls);
+      }
+    } else if (result.urlset) {
+      // This is a regular sitemap
+      for (const url of result.urlset.url) {
+        urls.push(url.loc[0]);
+      }
+    }
+
+    return urls;
+  }
+
+  private parseTxtSitemap(content: string): string[] {
+    return content.split('\n').filter(line => line.trim().startsWith('http'));
+  }
+
+  private async parseRssSitemap(content: string): Promise<string[]> {
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(content);
+    return result.rss.channel[0].item.map(item => item.link[0]);
+  }
+
+  private async parseAtomSitemap(content: string): Promise<string[]> {
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(content);
+    return result.feed.entry.map(entry => entry.link[0].$.href);
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\crawler\services\sitemap\sitemap-parser.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
+import * as xml2js from 'xml2js';
+import * as zlib from 'zlib';
+import { promisify } from 'util';
+
+const gunzip = promisify(zlib.gunzip);
+
+@Injectable()
+export class SitemapParser {
+  private maxUrls: number;
+  private timeout: number;
+
+  constructor(private configService: ConfigService) {
+    this.maxUrls = this.configService.get<number>('SITEMAP_PARSER_MAX_URLS', 50000);
+    this.timeout = this.configService.get<number>('SITEMAP_PARSER_TIMEOUT', 30000);
+  }
+
+  async parse(url: string): Promise<string[]> {
+    const response = await this.fetchSitemap(url);
+    const content = await this.decompressIfNeeded(response);
+
+    if (this.isXmlSitemap(content)) {
+      return this.parseXmlSitemap(content);
+    } else if (this.isTextSitemap(content)) {
+      return this.parseTextSitemap(content);
+    } else {
+      throw new Error('Unsupported sitemap format');
+    }
+  }
+
+  private async fetchSitemap(url: string): Promise<string> {
+    try {
+      const response = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: this.timeout,
+      });
+      return response.data;
+    } catch (error) {
+      throw new Error(`Failed to fetch sitemap: ${error.message}`);
+    }
+  }
+
+  private async decompressIfNeeded(content: string | Buffer): Promise<string> {
+    if (content instanceof Buffer && content[0] === 0x1f && content[1] === 0x8b) {
+      const decompressed = await gunzip(content);
+      return decompressed.toString('utf-8');
+    }
+    return content.toString('utf-8');
+  }
+
+  private isXmlSitemap(content: string): boolean {
+    return content.trim().startsWith('<?xml') || content.trim().startsWith('<urlset') || content.trim().startsWith('<sitemapindex');
+  }
+
+  private isTextSitemap(content: string): boolean {
+    const lines = content.trim().split('\n');
+    return lines.every(line => line.trim().startsWith('http'));
+  }
+
+  private async parseXmlSitemap(content: string): Promise<string[]> {
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(content);
+
+    if (result.sitemapindex) {
+      return this.parseSitemapIndex(result.sitemapindex);
+    } else if (result.urlset) {
+      return this.parseUrlset(result.urlset);
+    } else {
+      throw new Error('Invalid XML sitemap format');
+    }
+  }
+
+  private async parseSitemapIndex(sitemapindex: any): Promise<string[]> {
+    const urls: string[] = [];
+    for (const sitemap of sitemapindex.sitemap) {
+      if (urls.length >= this.maxUrls) break;
+      const sitemapUrl = sitemap.loc[0];
+      const sitemapUrls = await this.parse(sitemapUrl);
+      urls.push(...sitemapUrls.slice(0, this.maxUrls - urls.length));
+    }
+    return urls;
+  }
+
+  private parseUrlset(urlset: any): string[] {
+    return urlset.url
+      .map((url: any) => url.loc[0])
+      .slice(0, this.maxUrls);
+  }
+
+  private parseTextSitemap(content: string): string[] {
+    return content
+      .trim()
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.startsWith('http'))
+      .slice(0, this.maxUrls);
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\enum\seo.enum.ts 
+-----------START OF FILE----------- 
+export enum SEOEnum {
+    ROBOT = "ROBOT",
+}-----------END OF FILE----------- 
+ 
+                                                                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\external-api.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class ExternalAPIService {
+  async fetchData(apiUrl: string, params: any): Promise<any> {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    return "voila ";
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\seo.interface.ts 
+-----------START OF FILE----------- 
+export interface SeoServiceInterface {
+  getData(sessionId:string): any;
+}-----------END OF FILE----------- 
+ 
+                                                                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\seo.module.ts 
+-----------START OF FILE----------- 
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { RobotsModule } from './robots/robots.module';
+import { SitemapModule } from './sitemap/sitemap.module';
+import { RobotsData, RobotsDataSchema } from './robots/robots-data.schema';
+import { SitemapData, SitemapDataSchema } from './sitemap/sitemap-data.schema';
+
+@Module({
+  imports: [
+    RobotsModule,
+    SitemapModule,
+    MongooseModule.forFeature([
+      { name: RobotsData.name, schema: RobotsDataSchema },
+      { name: SitemapData.name, schema: SitemapDataSchema },
+    ]),
+  ],
+  exports: [RobotsModule, SitemapModule],
+})
+export class SEOModule {}-----------END OF FILE----------- 
+ 
+                                                                                                                                C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\transform.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class TransformService {
+  transformData(rawData: any, transformationType: string): any {
+    // Placeholder for data transformation logic
+    // Implement transformations based on the type of data
+    return rawData; // Simplified, should be adjusted for real transformation logic
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\robots\RobotData.Interface.ts 
+-----------START OF FILE----------- 
+export interface RobotsData {
+    exist: boolean;
+    content?: string;
+  }-----------END OF FILE----------- 
+ 
+                                                                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\robots\robots-data.schema.ts 
+-----------START OF FILE----------- 
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema()
+export class RobotsData extends Document {
+  @Prop({ required: true })
+  auditId: string;
+
+  @Prop({ required: true })
+  exist: boolean;
+
+  @Prop()
+  content?: string;
+}
+
+export const RobotsDataSchema = SchemaFactory.createForClass(RobotsData);
+-----------END OF FILE----------- 
+ 
+                                                                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\robots\robots.config.ts 
+-----------START OF FILE----------- 
+export const robotsConfig = {
+    externalApiUrl: 'https://example-robots-api.com',
+  };
+  -----------END OF FILE----------- 
+ 
+                                                                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\robots\robots.controller.ts 
+-----------START OF FILE----------- 
+import { Controller, Get, Query } from '@nestjs/common';
+import { RobotsService } from './robots.service';
+
+@Controller('seo/robots')
+export class RobotsController {
+  constructor(private readonly robotsService: RobotsService) {}
+
+  @Get()
+  async getRobotsData(@Query('url') url: string, @Query('auditId') auditId: string) {
+    return this.robotsService.analyzeRobots(url, auditId);
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\robots\robots.module.ts 
+-----------START OF FILE----------- 
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { RobotsService } from './robots.service';
+import { RobotsController } from './robots.controller';
+import { RobotsData, RobotsDataSchema } from './robots-data.schema';
+
+@Module({
+  imports: [MongooseModule.forFeature([{ name: RobotsData.name, schema: RobotsDataSchema }])],
+  controllers: [RobotsController],
+  providers: [RobotsService],
+})
+export class RobotsModule {}
+-----------END OF FILE----------- 
+ 
+                                                                                                                                    C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\robots\robots.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { RobotsData } from './robots-data.schema';
+import { SeoServiceInterface } from '../seo.interface';
+
+@Injectable()
+export class RobotsService implements SeoServiceInterface {
+  constructor(
+    @InjectModel(RobotsData.name) private robotsDataModel: Model<RobotsData>,
+  ) { }
+
+  async analyzeRobots(url: string, auditId: string): Promise<any> {
+    const rawData = await this.getRobotsData(url);
+    await this.saveRobotsData(auditId, rawData);
+    return rawData;
+  }
+
+  async getRobotsData(url: string): Promise<{ exist: boolean; content?: string }> {
+
+    const rootUrl = await this.getRootUrl(url);
+    const robotsTxtUrl = `${rootUrl}/robots.txt`;
+    try {
+      const response = await fetch(robotsTxtUrl);
+      const isText =  this.isTextFile(response);
+      console.log(!this.isTextFile(response));
+      if (response.ok && this.isTextFile(response) ) {
+        return {
+          exist: true,
+          content: await response.text(),
+        };
+      }
+    } catch (_) {
+      return {
+        exist: false,
+        content:''
+      };
+    }
+  }
+
+  private async getRootUrl(url: string): Promise<string> {
+    const parsedUrl = new URL(url);
+    return `${parsedUrl.protocol}//${parsedUrl.hostname}`;
+  }
+
+  private isTextFile(response: Response): boolean {
+    const contentType = response.headers.get('content-type');
+    return contentType && contentType.includes('text/plain');
+  }
+
+  private async saveRobotsData(auditId: string, rawData: { exist: boolean; content?: string }): Promise<void> {
+    const robotsData = new this.robotsDataModel({
+      auditId,
+      exist: rawData.exist,
+      content: rawData.content,
+    });
+    await robotsData.save();
+  }
+
+  public async getData(sessionId: string): Promise<any> {
+    try {
+      const robotsData = await this.robotsDataModel.findOne({ auditId: sessionId }).exec()
+      return robotsData.content
+    } catch (error) {
+      throw new Error(`Failed to fetch robots data: ${error.message}`)
+    }
+  }
+  
+}
+
+-----------END OF FILE----------- 
+ 
+                                                                                                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\sitemap\sitemap-data.schema.ts 
+-----------START OF FILE----------- 
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+@Schema()
+export class SitemapData extends Document {
+  @Prop({ required: true })
+  auditId: string;
+
+  @Prop({ required: true })
+  xmlExist: boolean;
+
+  @Prop()
+  xmlContent?: string;
+
+  @Prop()
+  xmlUrls?: string[];
+
+  @Prop({ required: true })
+  htmlExist: boolean;
+
+  @Prop()
+  htmlContent?: string;
+}
+
+export const SitemapDataSchema = SchemaFactory.createForClass(SitemapData);
+-----------END OF FILE----------- 
+ 
+                                                                                                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\sitemap\sitemap.controller.ts 
+-----------START OF FILE----------- 
+import { Controller, Get, Query } from '@nestjs/common';
+import { SitemapService } from './sitemap.service';
+
+@Controller('seo/sitemap')
+export class SitemapController {
+  constructor(private readonly sitemapService: SitemapService) {}
+
+  @Get()
+  async getSitemapData(@Query('url') url: string, @Query('auditId') auditId: string) {
+    return this.sitemapService.analyzeSitemap(url, auditId);
+  }
+}-----------END OF FILE----------- 
+ 
+                                                                                                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\sitemap\sitemap.module.ts 
+-----------START OF FILE----------- 
+import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { SitemapService } from './sitemap.service';
+import { SitemapController } from './sitemap.controller';
+import { SitemapData, SitemapDataSchema } from './sitemap-data.schema';
+
+@Module({
+  imports: [MongooseModule.forFeature([{ name: SitemapData.name, schema: SitemapDataSchema }])],
+  controllers: [SitemapController],
+  providers: [SitemapService],
+  exports: [SitemapService],
+})
+export class SitemapModule {}
+-----------END OF FILE----------- 
+ 
+                                                                                                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\sitemap\sitemap.service.ts 
+-----------START OF FILE----------- 
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { SitemapData } from './sitemap-data.schema';
+import { SeoServiceInterface } from '../seo.interface';
+import * as xml2js from 'xml2js';
+
+@Injectable()
+export class SitemapService implements SeoServiceInterface {
+  constructor(
+    @InjectModel(SitemapData.name) private sitemapDataModel: Model<SitemapData>,
+  ) {}
+
+  async analyzeSitemap(url: string, auditId: string): Promise<any> {
+    const xmlData = await this.getSitemapXmlData(url);
+    const htmlData = await this.getSitemapHtmlData(url);
+    await this.saveSitemapData(auditId, xmlData, htmlData);
+    return { xml: xmlData, html: htmlData };
+  }
+
+  async getSitemapXmlData(url: string): Promise<{ exist: boolean; content?: string; urls?: string[] }> {
+    const rootUrl = await this.getRootUrl(url);
+    const sitemapUrl = `${rootUrl}/sitemap.xml`;
+    try {
+      const response = await fetch(sitemapUrl);
+      if (response.ok && response.headers.get('content-type')?.includes('application/xml')) {
+        const content = await response.text();
+        const urls = await this.parseSitemapXml(content);
+        return {
+          exist: true,
+          content,
+          urls,
+        };
+      }
+    } catch (_) {}
+    return {
+      exist: false,
+    };
+  }
+
+  async getSitemapHtmlData(url: string): Promise<{ exist: boolean; content?: string }> {
+    const rootUrl = await this.getRootUrl(url);
+    const sitemapUrl = `${rootUrl}/sitemap.html`;
+    try {
+      const response = await fetch(sitemapUrl);
+      if (response.ok && response.headers.get('content-type')?.includes('text/html')) {
+        const content = await response.text();
+        return {
+          exist: true,
+          content,
+        };
+      }
+    } catch (_) {}
+    return {
+      exist: false,
+    };
+  }
+
+  private async getRootUrl(url: string): Promise<string> {
+    const parsedUrl = new URL(url);
+    return `${parsedUrl.protocol}//${parsedUrl.hostname}`;
+  }
+
+  private async parseSitemapXml(content: string): Promise<string[]> {
+    const parser = new xml2js.Parser();
+    const result = await parser.parseStringPromise(content);
+    return result.urlset.url.map(urlObj => urlObj.loc[0]);
+  }
+
+  private async saveSitemapData(
+    auditId: string, 
+    xmlData: { exist: boolean; content?: string; urls?: string[] },
+    htmlData: { exist: boolean; content?: string }
+  ): Promise<void> {
+    const sitemapData = new this.sitemapDataModel({
+      auditId,
+      xmlExist: xmlData.exist,
+      xmlContent: xmlData.content,
+      xmlUrls: xmlData.urls,
+      htmlExist: htmlData.exist,
+      htmlContent: htmlData.content,
+    });
+    await sitemapData.save();
+  }
+
+  public async getData(sessionId: string): Promise<any> {
+    try {
+      const sitemapData = await this.sitemapDataModel.findOne({ auditId: sessionId }).exec();
+      return {
+        xml: {
+          exist: sitemapData.xmlExist,
+          content: sitemapData.xmlContent,
+          urls: sitemapData.xmlUrls,
+        },
+        html: {
+          exist: sitemapData.htmlExist,
+          content: sitemapData.htmlContent,
+        },
+      };
+    } catch (error) {
+      throw new Error(`Failed to fetch sitemap data: ${error.message}`);
+    }
+  }
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                                                        C:\Workspace\Web\Ai Business grow project\Back_end\src\seo\sitemap\SitemapData.Interface.ts 
+-----------START OF FILE----------- 
+export interface SitemapData {
+  xmlExist: boolean;
+  xmlContent?: string;
+  xmlUrls?: string[];
+  htmlExist: boolean;
+  htmlContent?: string;
+}
+-----------END OF FILE----------- 
+ 
+                                                                                                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\users\user.module.ts 
 -----------START OF FILE----------- 
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
@@ -375,7 +3038,7 @@ import { UserSchema } from './user.schema';
 export class UserModule {}
 -----------END OF FILE----------- 
  
-                            C:\Workspace\Web\Ai Business grow project\saas-backend\src\users\user.schema.ts 
+                                                                                                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\users\user.schema.ts 
 -----------START OF FILE----------- 
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
@@ -410,7 +3073,7 @@ UserSchema.pre<User>('save', async function (next) {
 });
 -----------END OF FILE----------- 
  
-                            C:\Workspace\Web\Ai Business grow project\saas-backend\src\users\user.service.ts 
+                                                                                                                                            C:\Workspace\Web\Ai Business grow project\Back_end\src\users\user.service.ts 
 -----------START OF FILE----------- 
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';

@@ -1,0 +1,7 @@
+{
+  "defaultUrlLimit": 1000,
+  "defaultDepthLimit": 5,
+  "userAgent": "SeoOptimizer Crawler/1.0",
+  "respectRobotsTxt": true,
+  "crawlDelay": 1000
+}
