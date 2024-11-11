@@ -2,19 +2,41 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { CrawlingData } from '../schemas/crawling-data.schema';
+import {  Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Cache } from 'cache-manager';
 
 @Injectable()
 export class CrawlingDataRepository {
   constructor(
-    @InjectModel(CrawlingData.name) private crawlingDataModel: Model<CrawlingData>
+    @InjectModel(CrawlingData.name) private crawlingDataModel: Model<CrawlingData>,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache
   ) {}
 
-  async updateCrawlingData(pageData: any): Promise<void> {
-    await this.crawlingDataModel.findOneAndUpdate(
-      { crawlingId: pageData.crawlingId, pageUrlRelative: pageData.pageUrlRelative },
-      pageData,
-      { upsert: true, new: true }
-    );
+  async bulkUpdateCrawlingData(pagesData: any[]): Promise<void> {
+    const bulkOps = pagesData.map(pageData => ({
+      updateOne: {
+        filter: { crawlingId: pageData.crawlingId, pageUrlRelative: pageData.pageUrlRelative },
+        update: pageData,
+        upsert: true
+      }
+    }));
+
+    await this.crawlingDataModel.bulkWrite(bulkOps);
+  }
+
+  async getCrawlingDataById(crawlingId: string): Promise<CrawlingData[]> {
+    const cacheKey = `crawling_data_${crawlingId}`;
+    const cachedData = await this.cacheManager.get<CrawlingData[]>(cacheKey);
+
+    if (cachedData) {
+      return cachedData;
+    }
+
+    const data = await this.crawlingDataModel.find({ crawlingId }).exec();
+    await this.cacheManager.set(cacheKey, data,  3600 ); // Cache for 1 hour
+
+    return data;
   }
 
   async updateDirectoryTreeData(crawlingId: string, directoryTreeData: any): Promise<void> {
@@ -65,20 +87,26 @@ export class CrawlingDataRepository {
   }
 
   async calculateAverageScores(crawlingId: string): Promise<Record<string, number>> {
-    const allScores = await this.crawlingDataModel.find({ crawlingId }).select('seoScores -_id');
-    const totalScores: Record<string, number> = {};
-    let count = 0;
+    const aggregationResult = await this.crawlingDataModel.aggregate([
+      { $match: { crawlingId } },
+      { $group: {
+          _id: null,
+          totalScores: { $push: "$seoScores" },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
 
-    allScores.forEach(({ seoScores }) => {
-      count++;
-      Object.entries(seoScores).forEach(([key, value]) => {
-        totalScores[key] = (totalScores[key] || 0) + value;
-      });
-    });
+    if (aggregationResult.length === 0) {
+      return {};
+    }
 
+    const { totalScores, count } = aggregationResult[0];
     const averageScores: Record<string, number> = {};
-    Object.entries(totalScores).forEach(([key, value]) => {
-      averageScores[key] = value / count;
+
+    Object.keys(totalScores[0]).forEach(key => {
+      const sum = totalScores.reduce((acc, scores) => acc + (scores[key] || 0), 0);
+      averageScores[key] = sum / count;
     });
 
     return averageScores;

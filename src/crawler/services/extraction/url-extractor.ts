@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { CrawlerConfigService } from '../../config/crawler-config.service';
 import { RobotsTxtService } from '../robot/robots-txt.service';
 import { InclusionExclusionService } from '../../config/inclusion-exclusion.service';
+import { URL } from 'url';
 
 @Injectable()
 export class UrlExtractor {
@@ -53,12 +54,12 @@ export class UrlExtractor {
   }
 
   private async filterAllowedUrls(urls: string[]): Promise<string[]> {
-    const allowedUrls = await Promise.all(
-      urls.map(async (url) => {
-        const isAllowed = await this.robotsTxtService.isAllowed(url);
-        return isAllowed ? url : null;
-      })
-    );
+    const allowedUrlPromises = urls.map(async (url) => {
+      const isAllowed = await this.robotsTxtService.isAllowed(url);
+      return isAllowed ? url : null;
+    });
+
+    const allowedUrls = await Promise.all(allowedUrlPromises);
     return allowedUrls.filter(Boolean);
   }
 

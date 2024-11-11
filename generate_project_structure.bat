@@ -40,7 +40,7 @@ for /f "delims=" %%F in ('dir /b /a-d "!dir_path!"') do (
     echo Full file path: !file_path!
     
     echo !indent!!file_path! >> !output_file!
-    echo -----------START OF FILE----------- >> !output_file!
+
     
     :: Check if the file exists before trying to read it
     if exist "!file_path!" (
@@ -51,7 +51,6 @@ for /f "delims=" %%F in ('dir /b /a-d "!dir_path!"') do (
         echo ERROR: File not found: !file_path! >> !output_file!
     )
 
-    echo -----------END OF FILE----------- >> !output_file!
     echo. >> !output_file!
 )
 
