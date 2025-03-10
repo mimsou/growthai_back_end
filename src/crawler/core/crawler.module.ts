@@ -43,6 +43,7 @@ import { TechnicalMobileAnalysisService } from '../services/analysis/technical-m
 import { AmpAnalysisService } from '../services/analysis/amp-analysis.service';
 import { ResourceUsageAnalysisService } from '../services/analysis/resource-usage-analysis.service';
 import { CookieAnalysisService } from '../services/analysis/cookie-analysis.service';
+import { StructuredDataAnalysisService } from '../services/analysis/structured-data-analysis.service';
 
 
   @Module({
@@ -109,6 +110,7 @@ import { CookieAnalysisService } from '../services/analysis/cookie-analysis.serv
       AmpAnalysisService,
       ResourceUsageAnalysisService,
       CookieAnalysisService,
+      StructuredDataAnalysisService,
     ],
     exports: [CrawlerService, UrlAnalyzerService, ImageAnalysisService,TechnicalMobileAnalysisService,
       AmpAnalysisService,

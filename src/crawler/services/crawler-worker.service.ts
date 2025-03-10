@@ -20,6 +20,8 @@ import { ContentAnalysisService } from './analysis/content-analysis.service';
 import { ImageAnalysisService } from './analysis/image-analysis.service';
 import { JavaScriptRenderingService } from './javascript-rendering.service';
 import { JavaRenderingScriptAnalysisService } from './analysis/java-rendering-script-analysis.service';
+import { StructuredDataAnalysisService } from './analysis/structured-data-analysis.service';
+
 
 
 @Injectable()
@@ -46,6 +48,8 @@ export class CrawlerWorker {
     private imageAnalysisService: ImageAnalysisService,
     private javaRenderingScriptAnalysisService: JavaRenderingScriptAnalysisService,
     private javascriptRenderingService: JavaScriptRenderingService,
+    private structuredDataAnalysisService: StructuredDataAnalysisService,
+
   ) {
     this.contentExtractor = new ContentExtractor();
     this.seoAnalyzer = new SEOAnalyzer(this.directoryTreeAnalyzer, crawlerConfigService);
@@ -139,6 +143,9 @@ export class CrawlerWorker {
       const seoScores = await this.seoAnalyzer.calculateSEOScores($, pageData);
       const newUrls = await this.urlExtractor.extractLinks($, url, depth, crawlConfig);
 
+      const structuredDataAnalysis = await this.structuredDataAnalysisService.analyzeStructuredData($, url);
+
+
       return { 
         pageData: {
           ...pageData,
@@ -159,7 +166,8 @@ export class CrawlerWorker {
             technical: technicalSeoAnalysis.performanceMetrics.performanceScore,
             compression: technicalSeoAnalysis.compressionAnalysis.compressionScore,
             http2: technicalSeoAnalysis.http2Analysis.http2Score,
-            pageSize: technicalSeoAnalysis.pageSizeAnalysis.pageSizeScore
+            pageSize: technicalSeoAnalysis.pageSizeAnalysis.pageSizeScore,
+            structuredData: this.seoAnalyzer.calculateStructuredDataScore(structuredDataAnalysis)
           },
           depth,
           statusCode,
@@ -204,7 +212,8 @@ export class CrawlerWorker {
           uniqueImageUrls,
           jsRenderingAnalysis,
           renderedContent,
-          technicalSeoAnalysis
+          technicalSeoAnalysis,
+          structuredDataAnalysis
         },
         newUrls 
       };

@@ -25,6 +25,37 @@ export class SEOAnalyzer {
      return Math.min(100, Math.max(0, 100 - (loadTime - 1000) / 100));
   }
 
+  calculateStructuredDataScore(analysis: any): number {
+    const weights = {
+      implementation: 0.3,
+      validation: 0.2,
+      richSnippets: 0.2,
+      competitive: 0.2,
+      seoImpact: 0.1
+    };
+  
+    const implementationScore = analysis.implementationScore || 0;
+    const validationScore = analysis.validation?.isValid ? 1 : 
+      Math.max(0, 1 - ((analysis.validation?.errorCount || 0) * 0.1));
+    const richSnippetScore = analysis.richSnippets?.eligibleSnippets?.length > 0 ? 1 : 0;
+    const competitiveScore = analysis.competitive?.industryStandardsAlignment || 0;
+  
+    // Calculate SEO impact score only if the property exists
+    const seoImpactScore = analysis.seoImpact ? (
+      (analysis.seoImpact.visibility?.score || 0) +
+      (analysis.seoImpact.richSnippetPotential?.score || 0) +
+      (analysis.seoImpact.competitiveAdvantage?.score || 0)
+    ) / 3 : 0;
+  
+    return (
+      implementationScore * weights.implementation +
+      validationScore * weights.validation +
+      richSnippetScore * weights.richSnippets +
+      competitiveScore * weights.competitive +
+      seoImpactScore * weights.seoImpact
+    );
+  }
+
   calculateMetaRobotsTagScore(metaRobotsTagAnalysis: any): number {
     let score = 100;
 

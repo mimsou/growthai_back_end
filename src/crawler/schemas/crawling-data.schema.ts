@@ -659,6 +659,106 @@ technicalSeoAnalysis: {
 
 };
 
+@Prop({ type: Object })
+structuredDataAnalysis: {
+  jsonLd: {
+    data: any[];
+    count: number;
+    valid: boolean;
+    errors: {
+      type: string;
+      message: string;
+      severity: string;
+    }[];
+  };
+  microdata: {
+    data: any[];
+    count: number;
+    nestingValid: boolean;
+    errors: {
+      type: string;
+      message: string;
+      severity: string;
+    }[];
+  };
+  rdfa: {
+    data: any[];
+    count: number;
+    prefixesValid: boolean;
+    errors: {
+      type: string;
+      message: string;
+      severity: string;
+    }[];
+  };
+  schemaTypes: {
+    identifiedTypes: string[];
+    deprecatedTypes: string[];
+    missingRecommendedTypes: string[];
+    coverage: number;
+  };
+  richSnippets: {
+    eligibleSnippets: {
+      type: string;
+      confidence: number;
+      enhancementPossibilities: {
+        property: string;
+        impact: string;
+        recommendation: string;
+      }[];
+    }[];
+    missingRequirements: {
+      type: string;
+      missing: string[];
+    }[];
+    potentialImprovements: string[];
+  };
+  validation: {
+    isValid: boolean;
+    errors: {
+      type: string;
+      message: string;
+      severity: string;
+    }[];
+    warnings: {
+      type: string;
+      message: string;
+      impact: string;
+    }[];
+    errorCount: number;
+    warningCount: number;
+  };
+  competitive: {
+    industryStandardsAlignment: number;
+    comprehensivenessScore: number;
+    uniqueFeatures: string[];
+    improvements: string[];
+  };
+  recommendations: {
+    type: string;
+    priority: string;
+    message: string;
+    impact: string;
+    implementation: any;
+  }[];
+  implementationScore: number;
+  seoImpact: {
+    visibility: {
+      score: number;
+      factors: string[];
+    };
+    richSnippetPotential: {
+      score: number;
+      opportunities: string[];
+    };
+    competitiveAdvantage: {
+      score: number;
+      strengths: string[];
+      weaknesses: string[];
+    };
+  };
+};
+
 }
 
 

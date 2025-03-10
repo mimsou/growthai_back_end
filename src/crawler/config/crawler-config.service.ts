@@ -37,6 +37,51 @@ export class CrawlerConfigService {
     this.loadCustomStartingPointsFromEnv();
   }
 
+  getStructuredDataConfig() {
+    return {
+      validation: {
+        enabled: this.configService.get<boolean>('STRUCTURED_DATA_VALIDATION_ENABLED', true),
+        strictMode: this.configService.get<boolean>('STRUCTURED_DATA_STRICT_MODE', true),
+        maxErrors: this.configService.get<number>('STRUCTURED_DATA_MAX_ERRORS', 50),
+        validateAgainstSchemaOrg: this.configService.get<boolean>('VALIDATE_AGAINST_SCHEMA_ORG', true),
+        validateAgainstGoogleRequirements: this.configService.get<boolean>('VALIDATE_AGAINST_GOOGLE', true),
+      },
+      jsonLd: {
+        enabled: this.configService.get<boolean>('JSON_LD_ANALYSIS_ENABLED', true),
+        multipleAllowed: this.configService.get<boolean>('JSON_LD_MULTIPLE_ALLOWED', true),
+        maxSize: this.configService.get<number>('JSON_LD_MAX_SIZE', 50000),
+        requiredProperties: this.configService.get<string>('JSON_LD_REQUIRED_PROPERTIES', '@context,@type').split(','),
+      },
+      microdata: {
+        enabled: this.configService.get<boolean>('MICRODATA_ANALYSIS_ENABLED', true),
+        validateNesting: this.configService.get<boolean>('MICRODATA_VALIDATE_NESTING', true),
+        maxNestedDepth: this.configService.get<number>('MICRODATA_MAX_NESTED_DEPTH', 10),
+      },
+      rdfa: {
+        enabled: this.configService.get<boolean>('RDFA_ANALYSIS_ENABLED', true),
+        validatePrefixes: this.configService.get<boolean>('RDFA_VALIDATE_PREFIXES', true),
+        requiredPrefixes: this.configService.get<string>('RDFA_REQUIRED_PREFIXES', 'og:,dc:').split(','),
+      },
+      richSnippets: {
+        checkEligibility: this.configService.get<boolean>('CHECK_RICH_SNIPPET_ELIGIBILITY', true),
+        types: this.configService.get<string>('RICH_SNIPPET_TYPES', 
+          'Article,BreadcrumbList,Event,FAQPage,HowTo,LocalBusiness,Product,Recipe,Review').split(','),
+        validateRequiredFields: this.configService.get<boolean>('VALIDATE_RICH_SNIPPET_FIELDS', true),
+      },
+      schemaTypes: {
+        preferredTypes: this.configService.get<string>('PREFERRED_SCHEMA_TYPES',
+          'Article,BlogPosting,Product,Organization,LocalBusiness,WebSite,WebPage').split(','),
+        deprecatedTypesWarning: this.configService.get<boolean>('WARN_DEPRECATED_SCHEMAS', true),
+      },
+      competitive: {
+        enabled: this.configService.get<boolean>('STRUCTURED_DATA_COMPETITIVE_ANALYSIS', true),
+        benchmarkThreshold: this.configService.get<number>('STRUCTURED_DATA_BENCHMARK_THRESHOLD', 0.8),
+        industryStandards: this.configService.get<string>('STRUCTURED_DATA_INDUSTRY_STANDARDS', 
+          'Organization,WebSite,BreadcrumbList').split(','),
+      }
+    };
+  }
+
   getTechnicalSeoConfig() {
     return {
       performance: {

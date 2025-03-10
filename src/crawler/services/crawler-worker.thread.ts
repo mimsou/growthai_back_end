@@ -29,6 +29,7 @@ import { TechnicalMobileAnalysisService } from './analysis/technical-mobile-anal
 import { AmpAnalysisService } from './analysis/amp-analysis.service';
 import { ResourceUsageAnalysisService } from './analysis/resource-usage-analysis.service';
 import { CookieAnalysisService } from './analysis/cookie-analysis.service';
+import { StructuredDataAnalysisService } from './analysis/structured-data-analysis.service';
 
 
 // Initialize ConfigModule
@@ -97,6 +98,7 @@ const contentAnalysisService = new ContentAnalysisService(crawlerConfigService);
 const imageAnalysisService = new ImageAnalysisService(crawlerConfigService,asyncHttpService);
 const javaRenderingScriptAnalysisService = new JavaRenderingScriptAnalysisService(crawlerConfigService);
 const javascriptRenderingService = new JavaScriptRenderingService(crawlerConfigService);
+const structuredDataAnalysisService = new  StructuredDataAnalysisService(crawlerConfigService);
 // Initialize CrawlerWorker with injected dependencies
 const crawlerWorker = new CrawlerWorker(
   crawlingDataRepository,
@@ -115,6 +117,8 @@ const crawlerWorker = new CrawlerWorker(
   imageAnalysisService,
   javaRenderingScriptAnalysisService,
   javascriptRenderingService,
+  structuredDataAnalysisService
+
 );
 
 if (parentPort) {
