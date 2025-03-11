@@ -12,7 +12,7 @@ import * as path from 'path';
 import { AsyncHttpService } from './async-http.service';
 import { CrawlerWorker } from './crawler-worker.service';
 import { ProgressService } from './progress.service';
-import * as pLimit from 'p-limit';
+import pLimit from 'p-limit';
 import { RateLimiterService } from './rate-limiter.service';
 import { PerformanceMonitorService } from './performance-monitor.service';
 import { SiteKeywordAnalyzerService } from './analysis/site-keyword-analyzer.service';
@@ -172,7 +172,8 @@ export class CrawlerService {
 
   private async distributeCrawlTasks(crawlingId: string, urlsToVisit: { url: string; priority: number }[], crawlConfig: any, asyncConfig: any): Promise<any> {
     const { concurrencyLimit, asyncBatchSize } = asyncConfig;
-    const limit = pLimit(parseInt(concurrencyLimit));
+    const pLimitModule = await import('p-limit');
+    const limit = pLimitModule.default(parseInt(concurrencyLimit));
     const taskQueue = urlsToVisit.slice(0, crawlConfig.urlLimit);
     const processedUrls = new Set<string>();
     let processedCount = 0;
