@@ -17,7 +17,7 @@ import { CrawlerModule } from './crawler/core/crawler.module';
     MongooseModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
-        uri: configService.get<string>('MONGO_URI'),
+        uri: configService.get<string>('DATABASE_URL'),
         useNewUrlParser: true,
         useUnifiedTopology: true,
         maxPoolSize: configService.get<number>('MONGO_POOL_SIZE', 10),

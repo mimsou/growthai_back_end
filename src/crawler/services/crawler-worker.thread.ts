@@ -62,7 +62,7 @@ const mockCacheManager: Cache = {
 }
 
 const configService = new ConfigService();
-const connection: Connection = createConnection(configService.get<string>('MONGO_URI'));
+const connection: Connection = createConnection(configService.get<string>('DATABASE_URL'));
 
 
 // Create Mongoose model
