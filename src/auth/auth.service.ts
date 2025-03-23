@@ -18,7 +18,6 @@ export class AuthService {
     private readonly userService: UserService,
     private readonly jwtService: JwtService,
   ) {
-    console.log(process.env.GOOGLE_CLIENT_ID)
     this.googleClient = new OAuth2Client("244958252159-hl1ir8a7isdhpletnuuvbdobtdcfjebk.apps.googleusercontent.com");
   }
 

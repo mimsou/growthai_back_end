@@ -18,8 +18,6 @@ import { CrawlerModule } from './crawler/core/crawler.module';
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         uri: configService.get<string>('DATABASE_URL'),
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
         maxPoolSize: configService.get<number>('MONGO_POOL_SIZE', 10),
         maxIdleTimeMS: configService.get<number>('MONGO_MAX_IDLE_TIME_MS', 30000),
         connectTimeoutMS: configService.get<number>('MONGO_CONNECT_TIMEOUT_MS', 30000),

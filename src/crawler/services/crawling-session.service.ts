@@ -36,7 +36,6 @@ export class CrawlingSessionService {
     duplicates: Map<string, string[]>, 
     nearDuplicates: Map<string, string[]>
   ): Promise<void> {
-    console.log('updateDuplicateContent called with crawlingId:', crawlingId);
     const duplicateEntries = Array.from(duplicates.entries()).map(([url, duplicateUrls]) => ({
       url,
       duplicateUrls
