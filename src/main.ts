@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import { Logger } from '@nestjs/common';
 import * as os from 'os';
 
 async function bootstrap() {
@@ -25,6 +26,6 @@ async function bootstrap() {
   const numCPUs = os.cpus().length;
   const maxThreads = Math.min(numCPUs, parseInt(process.env.CRAWLER_MAX_THREADS) || 4);
   process.env.UV_THREADPOOL_SIZE = maxThreads.toString();
-  
+  app.useLogger(Logger.DEBUG);
   await app.listen(process.env.PORT || 5000);
 }bootstrap();
