@@ -26,6 +26,6 @@ async function bootstrap() {
   const numCPUs = os.cpus().length;
   const maxThreads = Math.min(numCPUs, parseInt(process.env.CRAWLER_MAX_THREADS) || 4);
   process.env.UV_THREADPOOL_SIZE = maxThreads.toString();
-  app.useLogger([Logger['log'], Logger['error'], Logger['warn'], Logger['debug'], Logger['verbose']]);
+  app.useLogger(['log', 'error', 'warn', 'debug', 'verbose']);
   await app.listen(process.env.PORT || 5000);
 }bootstrap();
