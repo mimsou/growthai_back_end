@@ -12,7 +12,6 @@ import * as path from 'path';
 import { AsyncHttpService } from './async-http.service';
 import { CrawlerWorker } from './crawler-worker.service';
 import { ProgressService } from './progress.service';
-import pLimit from 'p-limit';
 import { RateLimiterService } from './rate-limiter.service';
 import { PerformanceMonitorService } from './performance-monitor.service';
 import { SiteKeywordAnalyzerService } from './analysis/site-keyword-analyzer.service';
@@ -172,8 +171,8 @@ export class CrawlerService {
 
   private async distributeCrawlTasks(crawlingId: string, urlsToVisit: { url: string; priority: number }[], crawlConfig: any, asyncConfig: any): Promise<any> {
     const { concurrencyLimit, asyncBatchSize } = asyncConfig;
-    const pLimitModule = await import('p-limit');
-    const limit = pLimitModule.default(parseInt(concurrencyLimit));
+    const { Sema } = await import('async-sema');
+    const sema = new Sema(parseInt(concurrencyLimit));
     const taskQueue = urlsToVisit.slice(0, crawlConfig.urlLimit);
     const processedUrls = new Set<string>();
     let processedCount = 0;
@@ -186,21 +185,26 @@ export class CrawlerService {
       
       const tasks = batch.map(({ url }) => {
         processedUrls.add(url);
-        return limit(async () => {
-          const startTime = Date.now();
-          const result = await this.crawlAndExtractWithWorker(crawlingId, url, 0, crawlConfig);
-          const endTime = Date.now();
-          this.performanceMonitorService.recordResponseTime(endTime - startTime);
-          this.performanceMonitorService.incrementMetric('totalRequests');
-          if (result.error) {
-            this.performanceMonitorService.incrementMetric('failedRequests');
-          } else {
-            this.performanceMonitorService.incrementMetric('successfulRequests');
-          }
-          return result;
-        });
+     return async () => {
+            await sema.acquire();
+            try {
+                const startTime = Date.now();
+                const result = await this.crawlAndExtractWithWorker(crawlingId, url, 0, crawlConfig);
+                const endTime = Date.now();
+                this.performanceMonitorService.recordResponseTime(endTime - startTime);
+                this.performanceMonitorService.incrementMetric('totalRequests');
+                if (result.error) {
+                    this.performanceMonitorService.incrementMetric('failedRequests');
+                } else {
+                    this.performanceMonitorService.incrementMetric('successfulRequests');
+                }
+                return result;
+            } finally {
+                sema.release();
+            }
+        };
       });
-      const results = await Promise.all(tasks);
+      const results = await Promise.all(tasks.map(task => task()));
   
       processedCount += batch.length;
       const siteKeywords = await this.siteKeywordAnalyzerService.analyzeSiteKeywords(results);
